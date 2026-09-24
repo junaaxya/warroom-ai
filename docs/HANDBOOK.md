@@ -1,5 +1,7 @@
 # War Room Handbook
 
+**English** | [Bahasa Indonesia](id/HANDBOOK.md)
+
 This is the main operator manual for operating War Room after installation.
 
 Current documented release: **0.1.0-alpha.1**

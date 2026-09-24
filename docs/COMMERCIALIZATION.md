@@ -1,5 +1,7 @@
 # Commercialization Notes
 
+**English** | [Bahasa Indonesia](id/COMMERCIALIZATION.md)
+
 This section is product strategy, not legal advice.
 
 ## Current best-fit distribution model

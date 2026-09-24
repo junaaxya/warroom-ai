@@ -1,5 +1,7 @@
 # Architecture
 
+**English** | [Bahasa Indonesia](id/ARCHITECTURE.md)
+
 ## Components
 
 ### Launcher

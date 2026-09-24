@@ -1,5 +1,7 @@
 # Release Checklist
 
+**English** | [Bahasa Indonesia](id/RELEASE-CHECKLIST.md)
+
 ## Source hygiene
 
 - [ ] No personal home-directory paths

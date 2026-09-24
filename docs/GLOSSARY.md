@@ -1,5 +1,7 @@
 # Glossary
 
+**English** | [Bahasa Indonesia](id/GLOSSARY.md)
+
 **Active project** — project currently targeted by the global Supervisor.
 
 **Alias** — human-friendly project name registered with `warroom add`.

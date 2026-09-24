@@ -1,5 +1,7 @@
 # Daily Usage
 
+**English** | [Bahasa Indonesia](id/DAILY-USAGE.md)
+
 ## Morning / after reboot
 
 ```bash

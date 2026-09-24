@@ -1,5 +1,9 @@
 # Quick Start
 
+**English** | [Bahasa Indonesia](id/QUICKSTART.md)
+
+**English** | [Bahasa Indonesia](id/QUICKSTART.md)
+
 ## First-time project
 
 ```bash

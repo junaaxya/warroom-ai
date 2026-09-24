@@ -1,5 +1,7 @@
 # War Room AI
 
+**English** | [Bahasa Indonesia](README.id.md)
+
 War Room AI is a local multi-agent engineering orchestration system for ChatGPT + OpenCode.
 
 It gives one ChatGPT Supervisor a controlled way to coordinate two independent local engineering divisions:

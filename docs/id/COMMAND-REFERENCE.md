@@ -1,8 +1,8 @@
-# Command Reference
+# Referensi Command
 
-**English** | [Bahasa Indonesia](id/COMMAND-REFERENCE.md)
+[Bahasa Inggris](../COMMAND-REFERENCE.md) | **Bahasa Indonesia**
 
-## Installation
+## Instalasi
 
 ```bash
 warroom version
@@ -56,4 +56,4 @@ warroom attach bridge   [project|alias|.]
 warroom cockpit [project|alias|.]
 ```
 
-Cockpit uses `opencode attach <url> --dir <project> --session <session-id>` against the existing Frontend and Backend servers.
+Cockpit menggunakan `opencode attach <url> --dir <project> --session <session-id>` terhadap Frontend dan Backend server yang sudah berjalan.

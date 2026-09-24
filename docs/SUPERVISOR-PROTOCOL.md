@@ -1,5 +1,7 @@
 # Supervisor Operating Protocol v1
 
+**English** | [Bahasa Indonesia](id/SUPERVISOR-PROTOCOL.md)
+
 Required lifecycle:
 
 ```text

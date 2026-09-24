@@ -1,5 +1,7 @@
 # Project Onboarding
 
+**English** | [Bahasa Indonesia](id/PROJECT-ONBOARDING.md)
+
 Onboarding converts a registered repository into a War Room project with explicit Frontend/Backend ownership, shared paths, protected paths, dynamic ports, and pinned OpenCode sessions.
 
 ## 1. Register alias

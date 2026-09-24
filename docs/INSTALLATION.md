@@ -1,5 +1,7 @@
 # Installation
 
+**English** | [Bahasa Indonesia](id/INSTALLATION.md)
+
 ## 1. Current target platform
 
 War Room is currently developed and validated on Linux/Ubuntu-style environments.

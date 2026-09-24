@@ -1,5 +1,7 @@
 # Security Model
 
+**English** | [Bahasa Indonesia](id/SECURITY.md)
+
 ## Write enforcement
 
 Current path evaluation order:

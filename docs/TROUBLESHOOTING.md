@@ -1,5 +1,7 @@
 # Troubleshooting
 
+**English** | [Bahasa Indonesia](id/TROUBLESHOOTING.md)
+
 ## Start with the right doctor
 
 Installation problem:
