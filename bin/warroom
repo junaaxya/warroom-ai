@@ -1,0 +1,2836 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROLE="${1:-}"
+
+# Resolve the real launcher location, including when invoked
+# through a symlink such as ~/.local/bin/warroom.
+WARROOM_SOURCE="${BASH_SOURCE[0]}"
+
+while [[ -L "$WARROOM_SOURCE" ]]; do
+  WARROOM_SOURCE_DIR="$(
+    cd -P "$(dirname "$WARROOM_SOURCE")" >/dev/null 2>&1
+    pwd
+  )"
+
+  WARROOM_SOURCE="$(
+    readlink "$WARROOM_SOURCE"
+  )"
+
+  if [[ "$WARROOM_SOURCE" != /* ]]; then
+    WARROOM_SOURCE="$WARROOM_SOURCE_DIR/$WARROOM_SOURCE"
+  fi
+done
+
+WARROOM_SCRIPT_DIR="$(
+  cd -P "$(dirname "$WARROOM_SOURCE")" >/dev/null 2>&1
+  pwd
+)"
+
+WARROOM_INSTALL_DIR="${WARROOM_INSTALL_DIR:-$(
+  cd "$WARROOM_SCRIPT_DIR/.." >/dev/null 2>&1
+  pwd -P
+)}"
+
+WARROOM_BIN="${WARROOM_BIN:-$WARROOM_INSTALL_DIR/bin/warroom}"
+WARROOM_LIB_DIR="${WARROOM_LIB_DIR:-$WARROOM_INSTALL_DIR/warroom-bridge}"
+WARROOM_HOME="${WARROOM_HOME:-$HOME/.warroom}"
+
+WARROOM_CONFIG="${WARROOM_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/warroom/config.json}"
+
+config_get() {
+  local key="$1"
+  local default_value="${2:-}"
+
+  python3 - \
+    "$WARROOM_CONFIG" \
+    "$key" \
+    "$default_value" <<'PY2'
+import json
+import os
+import sys
+
+config_file, key, default = sys.argv[1:4]
+
+if not os.path.exists(config_file):
+    print(default)
+    raise SystemExit(0)
+
+try:
+    with open(config_file) as f:
+        data = json.load(f)
+except Exception as exc:
+    print(
+        f"[warroom] invalid config {config_file}: {exc}",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+
+value = data
+
+for part in key.split("."):
+    if not isinstance(value, dict) or part not in value:
+        value = default
+        break
+
+    value = value[part]
+
+if value is None:
+    value = default
+
+if isinstance(value, str):
+    value = os.path.expanduser(value)
+
+print(value)
+PY2
+}
+
+if [[ "$ROLE" == "setup" || "$ROLE" == "doctor-install" ]]; then
+  WARROOM_SUPERVISOR_ALIAS="${WARROOM_SUPERVISOR_ALIAS:-warroom-supervisor}"
+  WARROOM_TUNNEL_PROFILE="${WARROOM_TUNNEL_PROFILE:-warroom-supervisor-managed}"
+  WARROOM_TUNNEL_ID="${WARROOM_TUNNEL_ID:-}"
+  WARROOM_RUNTIME_KEY_FILE="${WARROOM_RUNTIME_KEY_FILE:-}"
+else
+  WARROOM_SUPERVISOR_ALIAS="$(
+    config_get \
+      "supervisor.alias" \
+      "warroom-supervisor"
+  )"
+
+  WARROOM_TUNNEL_PROFILE="$(
+    config_get \
+      "supervisor.tunnel_profile" \
+      "warroom-supervisor-managed"
+  )"
+
+  WARROOM_TUNNEL_ID="${WARROOM_TUNNEL_ID:-$(
+    config_get \
+      "supervisor.tunnel_id" \
+      ""
+  )}"
+
+  WARROOM_RUNTIME_KEY_FILE="${WARROOM_RUNTIME_KEY_FILE:-$(
+    config_get \
+      "supervisor.runtime_key_file" \
+      ""
+  )}"
+fi
+
+if [[ -n "${WARROOM_TUNNEL_CLIENT:-}" ]]; then
+  :
+elif command -v tunnel-client >/dev/null 2>&1; then
+  WARROOM_TUNNEL_CLIENT="$(command -v tunnel-client)"
+elif [[ -x "$HOME/bin/tunnel-client" ]]; then
+  WARROOM_TUNNEL_CLIENT="$HOME/bin/tunnel-client"
+else
+  WARROOM_TUNNEL_CLIENT=""
+fi
+
+ALIASES_FILE="$WARROOM_HOME/aliases.json"
+ACTIVE_FILE="$WARROOM_HOME/active-project.json"
+HANDOFF_DIR="$WARROOM_HOME/handoffs"
+
+# Commands that only inspect/configure the installation must not
+# initialize project state as a side effect.
+case "$ROLE" in
+  ""|help|-h|--help|setup|doctor-install|version|-v|--version)
+    ;;
+  *)
+    mkdir -p "$WARROOM_HOME" "$HANDOFF_DIR"
+
+    if [[ ! -f "$ALIASES_FILE" ]]; then
+      printf '{}\\n' > "$ALIASES_FILE"
+      chmod 600 "$ALIASES_FILE"
+    fi
+    ;;
+esac
+
+canonical_dir() {
+  local dir="$1"
+
+  if [[ ! -d "$dir" ]]; then
+    return 1
+  fi
+
+  (
+    cd "$dir"
+    pwd -P
+  )
+}
+
+project_identity() {
+  python3 - "$1" <<'PY2'
+import hashlib
+import os
+import re
+import sys
+
+project = os.path.realpath(sys.argv[1])
+name = os.path.basename(
+    project.rstrip(os.sep)
+) or "project"
+
+slug = re.sub(
+    r"[^A-Za-z0-9._-]+",
+    "-",
+    name,
+).strip("-._").lower()
+
+if not slug:
+    slug = "project"
+
+key = hashlib.sha256(
+    project.encode()
+).hexdigest()[:12]
+
+print(f"{slug}-{key}")
+PY2
+}
+
+lookup_alias() {
+  python3 - "$ALIASES_FILE" "$1" <<'PY2'
+import json, sys
+
+path, alias = sys.argv[1:3]
+
+with open(path) as f:
+    data = json.load(f)
+
+value = data.get(alias)
+
+if value:
+    print(value)
+PY2
+}
+
+set_active_project() {
+  local project="$1"
+  local state="$2"
+  local project_name="$3"
+  local project_id="$4"
+
+  python3 - \
+    "$ACTIVE_FILE" \
+    "$HANDOFF_DIR" \
+    "$project" \
+    "$state" \
+    "$project_name" \
+    "$project_id" <<'PY2'
+import datetime
+import hashlib
+import json
+import os
+import sys
+import tempfile
+
+active_file, handoff_dir, project, state_file, project_name, project_id = sys.argv[1:7]
+
+key = hashlib.sha256(
+    os.path.realpath(project).encode()
+).hexdigest()[:12]
+
+handoff_file = os.path.join(
+    handoff_dir,
+    f"{project_id}.json",
+)
+
+os.makedirs(handoff_dir, exist_ok=True)
+
+if not os.path.exists(handoff_file):
+    now = datetime.datetime.now(
+        datetime.timezone.utc
+    ).isoformat()
+
+    handoff = {
+        "project": os.path.realpath(project),
+        "project_name": project_name,
+        "current_goal": "",
+        "status": "idle",
+        "completed": [],
+        "open_issues": [],
+        "decisions": [],
+        "verification": [],
+        "next_action": "",
+        "updated_at": now,
+    }
+
+    fd, tmp = tempfile.mkstemp(
+        dir=handoff_dir,
+        prefix=".handoff.",
+        text=True,
+    )
+
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(
+                handoff,
+                f,
+                indent=2,
+                sort_keys=True,
+            )
+            f.write("\n")
+
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, handoff_file)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+active = {
+    "project": os.path.realpath(project),
+    "project_name": project_name,
+    "project_id": project_id,
+    "state_file": os.path.realpath(state_file),
+    "handoff_file": handoff_file,
+}
+
+directory = os.path.dirname(active_file)
+
+fd, tmp = tempfile.mkstemp(
+    dir=directory,
+    prefix=".active-project.",
+    text=True,
+)
+
+try:
+    with os.fdopen(fd, "w") as f:
+        json.dump(
+            active,
+            f,
+            indent=2,
+            sort_keys=True,
+        )
+        f.write("\n")
+
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, active_file)
+finally:
+    if os.path.exists(tmp):
+        os.unlink(tmp)
+
+print(handoff_file)
+PY2
+}
+
+case "$ROLE" in
+  version|-v|--version)
+    VERSION_FILE="$WARROOM_INSTALL_DIR/VERSION"
+
+    if [[ -f "$VERSION_FILE" ]]; then
+      VERSION="$(tr -d '\r\n' < "$VERSION_FILE")"
+    else
+      VERSION="development"
+    fi
+
+    echo "War Room $VERSION"
+    exit 0
+    ;;
+
+  setup)
+    echo "=== WAR ROOM SETUP ==="
+    echo
+
+    if [[ ! -t 0 ]]; then
+      echo "❌ warroom setup requires an interactive terminal"
+      exit 1
+    fi
+
+    CONFIG_DIR="$(dirname "$WARROOM_CONFIG")"
+
+    mkdir -p "$CONFIG_DIR"
+    chmod 700 "$CONFIG_DIR" 2>/dev/null || true
+
+    # If an existing config is malformed, allow setup to repair it.
+    if [[ -f "$WARROOM_CONFIG" ]]; then
+      if ! python3 -m json.tool \
+        "$WARROOM_CONFIG" >/dev/null 2>&1
+      then
+        echo "⚠️  existing config is invalid JSON:"
+        echo "   $WARROOM_CONFIG"
+        echo
+
+        read -r -p \
+          "Replace it with a new config? [y/N]: " \
+          REPAIR_CONFIRM
+
+        case "$REPAIR_CONFIRM" in
+          y|Y|yes|YES)
+            ;;
+          *)
+            echo "Setup cancelled."
+            exit 1
+            ;;
+        esac
+      fi
+    fi
+
+    CURRENT_ALIAS="warroom-supervisor"
+    CURRENT_PROFILE="warroom-supervisor-managed"
+    CURRENT_TUNNEL_ID=""
+    CURRENT_RUNTIME_KEY=""
+
+    if [[ -f "$WARROOM_CONFIG" ]] &&
+       python3 -m json.tool \
+         "$WARROOM_CONFIG" >/dev/null 2>&1
+    then
+      CURRENT_ALIAS="$(
+        config_get \
+          "supervisor.alias" \
+          "warroom-supervisor"
+      )"
+
+      CURRENT_PROFILE="$(
+        config_get \
+          "supervisor.tunnel_profile" \
+          "warroom-supervisor-managed"
+      )"
+
+      CURRENT_TUNNEL_ID="$(
+        config_get \
+          "supervisor.tunnel_id" \
+          ""
+      )"
+
+      CURRENT_RUNTIME_KEY="$(
+        config_get \
+          "supervisor.runtime_key_file" \
+          ""
+      )"
+    fi
+
+    echo "Config file:"
+    echo "  $WARROOM_CONFIG"
+    echo
+
+    if [[ -n "$WARROOM_TUNNEL_CLIENT" ]]; then
+      echo "Tunnel client:"
+      echo "  ✓ $WARROOM_TUNNEL_CLIENT"
+    else
+      echo "Tunnel client:"
+      echo "  ⚠️  not currently found"
+    fi
+
+    echo
+
+    read -r -p \
+      "Supervisor alias [$CURRENT_ALIAS]: " \
+      INPUT_ALIAS
+
+    SUPERVISOR_ALIAS_VALUE="${INPUT_ALIAS:-$CURRENT_ALIAS}"
+
+    if [[ ! "$SUPERVISOR_ALIAS_VALUE" =~ ^[A-Za-z0-9._-]+$ ]]; then
+      echo "❌ invalid supervisor alias"
+      exit 1
+    fi
+
+    read -r -p \
+      "Tunnel profile [$CURRENT_PROFILE]: " \
+      INPUT_PROFILE
+
+    TUNNEL_PROFILE_VALUE="${INPUT_PROFILE:-$CURRENT_PROFILE}"
+
+    if [[ -n "$CURRENT_TUNNEL_ID" ]]; then
+      read -r -p \
+        "Tunnel ID [Enter keeps existing]: " \
+        INPUT_TUNNEL_ID
+
+      TUNNEL_ID_VALUE="${INPUT_TUNNEL_ID:-$CURRENT_TUNNEL_ID}"
+    else
+      read -r -p \
+        "Tunnel ID: " \
+        TUNNEL_ID_VALUE
+    fi
+
+    if [[ -z "$TUNNEL_ID_VALUE" ]]; then
+      echo "❌ tunnel ID is required"
+      exit 1
+    fi
+
+    if [[ "$TUNNEL_ID_VALUE" != tunnel_* ]]; then
+      echo "⚠️  tunnel ID does not start with 'tunnel_'"
+      echo "   continuing because provider formats may change"
+    fi
+
+    if [[ -n "$CURRENT_RUNTIME_KEY" ]]; then
+      read -r -p \
+        "Runtime key file [$CURRENT_RUNTIME_KEY]: " \
+        INPUT_RUNTIME_KEY
+
+      RUNTIME_KEY_VALUE="${INPUT_RUNTIME_KEY:-$CURRENT_RUNTIME_KEY}"
+    else
+      read -r -p \
+        "Runtime key file path: " \
+        RUNTIME_KEY_VALUE
+    fi
+
+    if [[ -z "$RUNTIME_KEY_VALUE" ]]; then
+      echo "❌ runtime key file path is required"
+      exit 1
+    fi
+
+    RUNTIME_KEY_VALUE="$(
+      python3 - "$RUNTIME_KEY_VALUE" <<'PY2'
+import os
+import sys
+
+print(
+    os.path.abspath(
+        os.path.expanduser(
+            sys.argv[1]
+        )
+    )
+)
+PY2
+    )"
+
+    if [[ ! -f "$RUNTIME_KEY_VALUE" ]]; then
+      echo
+      echo "⚠️  runtime key file does not currently exist:"
+      echo "   $RUNTIME_KEY_VALUE"
+      echo
+      echo "The config can still be saved, but"
+      echo "warroom up will fail until the file exists."
+      echo
+    fi
+
+    if [[ -f "$WARROOM_CONFIG" ]]; then
+      CONFIG_BACKUP="${WARROOM_CONFIG}.bak.$(date +%Y%m%d-%H%M%S)"
+      cp "$WARROOM_CONFIG" "$CONFIG_BACKUP"
+      chmod 600 "$CONFIG_BACKUP" 2>/dev/null || true
+
+      echo "Backup:"
+      echo "  $CONFIG_BACKUP"
+      echo
+    fi
+
+    python3 - \
+      "$WARROOM_CONFIG" \
+      "$SUPERVISOR_ALIAS_VALUE" \
+      "$TUNNEL_PROFILE_VALUE" \
+      "$TUNNEL_ID_VALUE" \
+      "$RUNTIME_KEY_VALUE" <<'PY2'
+import json
+import os
+import sys
+import tempfile
+
+(
+    config_file,
+    alias,
+    profile,
+    tunnel_id,
+    runtime_key_file,
+) = sys.argv[1:6]
+
+data = {}
+
+if os.path.exists(config_file):
+    try:
+        with open(config_file) as f:
+            loaded = json.load(f)
+
+        if isinstance(loaded, dict):
+            data = loaded
+    except Exception:
+        # Invalid config is intentionally replaced by setup.
+        data = {}
+
+supervisor = data.get("supervisor")
+
+if not isinstance(supervisor, dict):
+    supervisor = {}
+
+supervisor.update(
+    {
+        "alias": alias,
+        "tunnel_profile": profile,
+        "tunnel_id": tunnel_id,
+        "runtime_key_file": runtime_key_file,
+    }
+)
+
+data["supervisor"] = supervisor
+
+directory = os.path.dirname(config_file)
+
+os.makedirs(
+    directory,
+    mode=0o700,
+    exist_ok=True,
+)
+
+fd, tmp = tempfile.mkstemp(
+    dir=directory,
+    prefix=".config.",
+    text=True,
+)
+
+try:
+    with os.fdopen(fd, "w") as f:
+        json.dump(
+            data,
+            f,
+            indent=2,
+            sort_keys=True,
+        )
+        f.write("\n")
+
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, config_file)
+finally:
+    if os.path.exists(tmp):
+        os.unlink(tmp)
+
+os.chmod(config_file, 0o600)
+PY2
+
+    if ! python3 -m json.tool \
+      "$WARROOM_CONFIG" >/dev/null 2>&1
+    then
+      echo "❌ generated config failed JSON validation"
+      exit 1
+    fi
+
+    MODE="$(
+      stat -c '%a' "$WARROOM_CONFIG" 2>/dev/null || true
+    )"
+
+    echo
+    echo "✅ War Room configuration saved"
+    echo "   file : $WARROOM_CONFIG"
+    echo "   mode : $MODE"
+    echo
+    echo "No runtime API key contents were read or stored."
+    echo "Only the path to the runtime key file is saved."
+    exit 0
+    ;;
+
+  doctor-install)
+    PASS=0
+    WARN=0
+    FAIL=0
+
+    ok() {
+      PASS=$((PASS + 1))
+      printf '✅ %-28s %s\n' "$1" "${2:-}"
+    }
+
+    warn() {
+      WARN=$((WARN + 1))
+      printf '⚠️  %-28s %s\n' "$1" "${2:-}"
+    }
+
+    fail() {
+      FAIL=$((FAIL + 1))
+      printf '❌ %-28s %s\n' "$1" "${2:-}"
+    }
+
+    echo "=== WAR ROOM INSTALL DOCTOR ==="
+    echo "install : $WARROOM_INSTALL_DIR"
+    echo "config  : $WARROOM_CONFIG"
+    echo
+
+    # --------------------------------------------------------
+    # Core command dependencies
+    # --------------------------------------------------------
+
+    for cmd in \
+      bash \
+      python3 \
+      node \
+      npm \
+      tmux \
+      curl \
+      ss \
+      opencode
+    do
+      if command -v "$cmd" >/dev/null 2>&1; then
+        ok "Dependency: $cmd" "$(command -v "$cmd")"
+      else
+        fail "Dependency: $cmd" "missing"
+      fi
+    done
+
+    # --------------------------------------------------------
+    # Installed product files
+    # --------------------------------------------------------
+
+    if [[ -x "$WARROOM_BIN" ]]; then
+      ok "War Room launcher" "$WARROOM_BIN"
+    else
+      fail "War Room launcher" "missing/not executable: $WARROOM_BIN"
+    fi
+
+    GUARD_SOURCE="$WARROOM_INSTALL_DIR/plugins/warroom-guard.js"
+    MCP="$WARROOM_LIB_DIR/mcp.js"
+    BRIDGE_JS="$WARROOM_LIB_DIR/bridge.cjs"
+    SUPERVISOR_MCP="$WARROOM_LIB_DIR/supervisor-mcp.js"
+    PACKAGE_JSON="$WARROOM_LIB_DIR/package.json"
+    PACKAGE_LOCK="$WARROOM_LIB_DIR/package-lock.json"
+
+    for item in \
+      "$GUARD_SOURCE" \
+      "$MCP" \
+      "$BRIDGE_JS" \
+      "$SUPERVISOR_MCP" \
+      "$PACKAGE_JSON" \
+      "$PACKAGE_LOCK"
+    do
+      if [[ -f "$item" ]]; then
+        ok "Product file" "$item"
+      else
+        fail "Product file" "missing: $item"
+      fi
+    done
+
+    # --------------------------------------------------------
+    # Syntax
+    # --------------------------------------------------------
+
+    if bash -n "$WARROOM_BIN" >/dev/null 2>&1; then
+      ok "Launcher syntax" "OK"
+    else
+      fail "Launcher syntax" "invalid"
+    fi
+
+    if [[ -f "$BRIDGE_JS" ]] &&
+       node --check "$BRIDGE_JS" >/dev/null 2>&1
+    then
+      ok "Bridge syntax" "OK"
+    else
+      fail "Bridge syntax" "invalid/missing"
+    fi
+
+    if [[ -f "$MCP" ]] &&
+       node --check "$MCP" >/dev/null 2>&1
+    then
+      ok "Division MCP syntax" "OK"
+    else
+      fail "Division MCP syntax" "invalid/missing"
+    fi
+
+    if [[ -f "$SUPERVISOR_MCP" ]] &&
+       node --check "$SUPERVISOR_MCP" >/dev/null 2>&1
+    then
+      ok "Supervisor MCP syntax" "OK"
+    else
+      fail "Supervisor MCP syntax" "invalid/missing"
+    fi
+
+    if [[ -f "$GUARD_SOURCE" ]] &&
+       node --check "$GUARD_SOURCE" >/dev/null 2>&1
+    then
+      ok "Guard source syntax" "OK"
+    else
+      fail "Guard source syntax" "invalid/missing"
+    fi
+
+    # --------------------------------------------------------
+    # Node dependencies
+    # --------------------------------------------------------
+
+    if [[ -d "$WARROOM_LIB_DIR/node_modules" ]]; then
+      if npm list \
+           --prefix "$WARROOM_LIB_DIR" \
+           --depth=0 \
+           '@modelcontextprotocol/server' \
+           zod >/dev/null 2>&1
+      then
+        ok "Node dependencies" "installed"
+      else
+        fail "Node dependencies" "incomplete or invalid"
+      fi
+    else
+      fail "Node dependencies" \
+        "node_modules missing; installer must run npm ci"
+    fi
+
+    # --------------------------------------------------------
+    # War Room config
+    # --------------------------------------------------------
+
+    CONFIG_VALID=0
+
+    if [[ -f "$WARROOM_CONFIG" ]]; then
+      if python3 -m json.tool \
+           "$WARROOM_CONFIG" >/dev/null 2>&1
+      then
+        CONFIG_VALID=1
+        ok "War Room config" "valid JSON"
+      else
+        fail "War Room config" "invalid JSON: $WARROOM_CONFIG"
+      fi
+
+      CONFIG_MODE="$(
+        stat -c '%a' "$WARROOM_CONFIG" 2>/dev/null || true
+      )"
+
+      if [[ "$CONFIG_MODE" == "600" ]]; then
+        ok "Config permissions" "600"
+      else
+        fail "Config permissions" \
+          "expected 600, got ${CONFIG_MODE:-unknown}"
+      fi
+    else
+      fail "War Room config" "missing: $WARROOM_CONFIG"
+      fail "Config permissions" "config missing"
+    fi
+
+    if [[ "$CONFIG_VALID" == "1" ]]; then
+      DOCTOR_ALIAS="$(
+        config_get \
+          "supervisor.alias" \
+          ""
+      )"
+
+      DOCTOR_PROFILE="$(
+        config_get \
+          "supervisor.tunnel_profile" \
+          ""
+      )"
+
+      DOCTOR_TUNNEL_ID="$(
+        config_get \
+          "supervisor.tunnel_id" \
+          ""
+      )"
+
+      DOCTOR_RUNTIME_KEY="$(
+        config_get \
+          "supervisor.runtime_key_file" \
+          ""
+      )"
+
+      if [[ -n "$DOCTOR_ALIAS" ]]; then
+        ok "Supervisor alias" "$DOCTOR_ALIAS"
+      else
+        fail "Supervisor alias" "not configured"
+      fi
+
+      if [[ -n "$DOCTOR_PROFILE" ]]; then
+        ok "Tunnel profile" "$DOCTOR_PROFILE"
+      else
+        fail "Tunnel profile" "not configured"
+      fi
+
+      if [[ -n "$DOCTOR_TUNNEL_ID" ]]; then
+        ok "Tunnel ID" "configured"
+      else
+        fail "Tunnel ID" "not configured"
+      fi
+
+      if [[ -n "$DOCTOR_RUNTIME_KEY" ]]; then
+        if [[ -f "$DOCTOR_RUNTIME_KEY" ]]; then
+          ok "Runtime key file" "$DOCTOR_RUNTIME_KEY"
+
+          KEY_MODE="$(
+            stat -c '%a' "$DOCTOR_RUNTIME_KEY" 2>/dev/null || true
+          )"
+
+          if python3 - "$KEY_MODE" <<'PY2'
+import sys
+
+mode = sys.argv[1]
+
+try:
+    value = int(mode, 8)
+except Exception:
+    raise SystemExit(1)
+
+# No permissions for group or others.
+raise SystemExit(0 if (value & 0o077) == 0 else 1)
+PY2
+          then
+            ok "Runtime key permissions" "$KEY_MODE"
+          else
+            fail "Runtime key permissions" \
+              "group/other access detected: ${KEY_MODE:-unknown}"
+          fi
+        else
+          fail "Runtime key file" \
+            "missing: $DOCTOR_RUNTIME_KEY"
+          fail "Runtime key permissions" \
+            "file missing"
+        fi
+      else
+        fail "Runtime key file" "not configured"
+        fail "Runtime key permissions" "not configured"
+      fi
+    else
+      fail "Supervisor alias" "config unavailable"
+      fail "Tunnel profile" "config unavailable"
+      fail "Tunnel ID" "config unavailable"
+      fail "Runtime key file" "config unavailable"
+      fail "Runtime key permissions" "config unavailable"
+    fi
+
+    # --------------------------------------------------------
+    # Tunnel client
+    # --------------------------------------------------------
+
+    if [[ -n "$WARROOM_TUNNEL_CLIENT" ]] &&
+       [[ -x "$WARROOM_TUNNEL_CLIENT" ]]
+    then
+      ok "Tunnel client" "$WARROOM_TUNNEL_CLIENT"
+    else
+      fail "Tunnel client" "not found"
+    fi
+
+    # --------------------------------------------------------
+    # Installed OpenCode guard
+    # --------------------------------------------------------
+
+    OPENCODE_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}/opencode"
+    INSTALLED_GUARD="$OPENCODE_CONFIG_HOME/plugins/warroom-guard.js"
+    OPENCODE_CONFIG="$OPENCODE_CONFIG_HOME/opencode.json"
+
+    if [[ -f "$INSTALLED_GUARD" ]] &&
+       node --check "$INSTALLED_GUARD" >/dev/null 2>&1
+    then
+      ok "Installed guard" "$INSTALLED_GUARD"
+    else
+      fail "Installed guard" "missing/invalid: $INSTALLED_GUARD"
+    fi
+
+    # --------------------------------------------------------
+    # OpenCode MCP registration
+    # --------------------------------------------------------
+
+    if [[ -f "$OPENCODE_CONFIG" ]]; then
+      if python3 - \
+        "$OPENCODE_CONFIG" \
+        "$MCP" <<'PY2'
+import json
+import os
+import sys
+
+config_file, expected_mcp = sys.argv[1:3]
+
+try:
+    with open(config_file) as f:
+        config = json.load(f)
+except Exception:
+    raise SystemExit(1)
+
+warroom = config.get("mcp", {}).get("warroom", {})
+
+if warroom.get("type") != "local":
+    raise SystemExit(1)
+
+command = warroom.get("command", [])
+
+if not isinstance(command, list):
+    raise SystemExit(1)
+
+expected = os.path.realpath(expected_mcp)
+
+actual = [
+    os.path.realpath(value)
+    for value in command
+    if isinstance(value, str)
+]
+
+raise SystemExit(
+    0 if expected in actual else 1
+)
+PY2
+      then
+        ok "OpenCode MCP config" "warroom registered"
+      else
+        fail "OpenCode MCP config" \
+          "warroom missing/mismatch"
+      fi
+    else
+      fail "OpenCode MCP config" "missing: $OPENCODE_CONFIG"
+    fi
+
+    echo
+    echo "=== SUMMARY ==="
+    echo "PASS : $PASS"
+    echo "WARN : $WARN"
+    echo "FAIL : $FAIL"
+
+    if (( FAIL > 0 )); then
+      echo
+      echo "❌ War Room installation is not ready"
+      exit 1
+    fi
+
+    echo
+    echo "✅ War Room installation is ready"
+    exit 0
+    ;;
+
+  active)
+    if [[ ! -f "$ACTIVE_FILE" ]]; then
+      echo "No active War Room project."
+      exit 1
+    fi
+
+    python3 - "$ACTIVE_FILE" <<'PY2'
+import json, sys
+
+with open(sys.argv[1]) as f:
+    a = json.load(f)
+
+print("=== ACTIVE WAR ROOM PROJECT ===")
+print(f"project : {a['project']}")
+print(f"name    : {a['project_name']}")
+print(f"id      : {a.get('project_id', a['project_name'])}")
+print(f"state   : {a['state_file']}")
+print(f"handoff : {a['handoff_file']}")
+PY2
+    exit 0
+    ;;
+
+  add)
+    ALIAS="${2:-}"
+    PROJECT_REF="${3:-}"
+
+    if [[ -z "$ALIAS" || -z "$PROJECT_REF" ]]; then
+      echo "Usage:"
+      echo "  warroom add <alias> <project-path>"
+      exit 1
+    fi
+
+    if [[ ! "$ALIAS" =~ ^[A-Za-z0-9._-]+$ ]]; then
+      echo "❌ invalid alias: $ALIAS"
+      echo "   use letters, numbers, dot, underscore, or dash"
+      exit 1
+    fi
+
+    if ! PROJECT="$(canonical_dir "$PROJECT_REF")"; then
+      echo "❌ project directory not found:"
+      echo "   $PROJECT_REF"
+      exit 1
+    fi
+
+    python3 - "$ALIASES_FILE" "$ALIAS" "$PROJECT" <<'PY2'
+import json, os, sys, tempfile
+
+path, alias, project = sys.argv[1:4]
+
+with open(path) as f:
+    data = json.load(f)
+
+data[alias] = project
+
+directory = os.path.dirname(path)
+
+fd, tmp = tempfile.mkstemp(
+    dir=directory,
+    prefix=".aliases.",
+    text=True,
+)
+
+try:
+    with os.fdopen(fd, "w") as f:
+        json.dump(data, f, indent=2, sort_keys=True)
+        f.write("\n")
+
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+finally:
+    if os.path.exists(tmp):
+        os.unlink(tmp)
+PY2
+
+    echo "✅ project alias added"
+    echo "   $ALIAS -> $PROJECT"
+    exit 0
+    ;;
+
+  onboard)
+    # WAR ROOM GENERIC ONBOARDING V1
+    ALIAS="${2:-}"
+    POLICY_FILE="${3:-}"
+
+    if [[ -z "$ALIAS" || -z "$POLICY_FILE" ]]; then
+      echo "Usage:"
+      echo "  warroom onboard <alias> <policy-json-file>"
+      exit 1
+    fi
+
+    if ! command -v tmux >/dev/null 2>&1; then
+      echo "❌ tmux is required for onboarding"
+      exit 1
+    fi
+
+    if ! command -v opencode >/dev/null 2>&1; then
+      echo "❌ opencode is required for onboarding"
+      exit 1
+    fi
+
+    if ! command -v curl >/dev/null 2>&1; then
+      echo "❌ curl is required for onboarding"
+      exit 1
+    fi
+
+    ALIAS_PATH="$(lookup_alias "$ALIAS")"
+
+    if [[ -z "$ALIAS_PATH" ]]; then
+      echo "❌ unknown project alias:"
+      echo "   $ALIAS"
+      exit 1
+    fi
+
+    if ! PROJECT="$(canonical_dir "$ALIAS_PATH")"; then
+      echo "❌ alias points to missing project:"
+      echo "   $ALIAS -> $ALIAS_PATH"
+      exit 1
+    fi
+
+    if [[ ! -f "$POLICY_FILE" ]]; then
+      echo "❌ policy file not found:"
+      echo "   $POLICY_FILE"
+      exit 1
+    fi
+
+    PROJECT_NAME="$(basename "$PROJECT")"
+    PROJECT_ID="$(project_identity "$PROJECT")"
+
+    mkdir -p \
+      "$WARROOM_HOME/projects" \
+      "$WARROOM_HOME/runtime"
+
+    STATE="$WARROOM_HOME/projects/${PROJECT_ID}.json"
+    LEGACY_STATE="$WARROOM_HOME/projects/${PROJECT_NAME}.json"
+    COORD_FILE="$WARROOM_HOME/runtime/${PROJECT_ID}-shared.json"
+
+    if [[ -f "$STATE" || -f "$LEGACY_STATE" ]]; then
+      echo "❌ project already onboarded"
+      echo "   project : $PROJECT"
+      echo "   id      : $PROJECT_ID"
+      exit 1
+    fi
+
+    NORMALIZED_POLICY="$(mktemp)"
+    BOOTSTRAP_TMUX="warroom-bootstrap-${PROJECT_ID}"
+    BOOTSTRAP_PORT=""
+    FRONTEND_SESSION=""
+    BACKEND_SESSION=""
+    ONBOARD_SUCCESS=0
+
+    cleanup_onboard() {
+      local status=$?
+
+      if [[ "$ONBOARD_SUCCESS" != "1" ]] &&
+         [[ -n "$BOOTSTRAP_PORT" ]]
+      then
+        if [[ -n "$FRONTEND_SESSION" ]]; then
+          curl -sS \
+            -o /dev/null \
+            -X DELETE \
+            "http://127.0.0.1:${BOOTSTRAP_PORT}/session/${FRONTEND_SESSION}" \
+            2>/dev/null || true
+        fi
+
+        if [[ -n "$BACKEND_SESSION" ]]; then
+          curl -sS \
+            -o /dev/null \
+            -X DELETE \
+            "http://127.0.0.1:${BOOTSTRAP_PORT}/session/${BACKEND_SESSION}" \
+            2>/dev/null || true
+        fi
+      fi
+
+      if tmux has-session \
+        -t "$BOOTSTRAP_TMUX" \
+        2>/dev/null
+      then
+        tmux kill-session \
+          -t "$BOOTSTRAP_TMUX" \
+          2>/dev/null || true
+      fi
+
+      rm -f "$NORMALIZED_POLICY"
+      return "$status"
+    }
+
+    trap cleanup_onboard EXIT
+
+    # Validate + normalize project-specific policy.
+    python3 - \
+      "$POLICY_FILE" \
+      "$NORMALIZED_POLICY" <<'PY2'
+import json
+import os
+import sys
+
+source, destination = sys.argv[1:3]
+
+with open(source) as f:
+    policy = json.load(f)
+
+ownership = policy.get("ownership")
+shared = policy.get("shared")
+protected = policy.get(
+    "protected",
+    {"paths": []},
+)
+
+if not isinstance(ownership, dict):
+    raise SystemExit(
+        "policy.ownership must be an object"
+    )
+
+for role in ("frontend", "backend"):
+    item = ownership.get(role)
+
+    if not isinstance(item, dict):
+        raise SystemExit(
+            f"ownership.{role} missing"
+        )
+
+    for field in (
+        "write",
+        "read",
+        "deny_write",
+    ):
+        value = item.get(field)
+
+        if not isinstance(value, list):
+            raise SystemExit(
+                f"ownership.{role}.{field} "
+                "must be an array"
+            )
+
+if not isinstance(shared, dict):
+    raise SystemExit(
+        "policy.shared must be an object"
+    )
+
+if (
+    shared.get("policy")
+    != "coordinate_before_semantic_change"
+):
+    raise SystemExit(
+        "unsupported shared.policy"
+    )
+
+if not isinstance(
+    shared.get("paths"),
+    list,
+):
+    raise SystemExit(
+        "shared.paths must be an array"
+    )
+
+ttl = int(
+    shared.get(
+        "reservation_ttl_ms",
+        600000,
+    )
+)
+
+if ttl <= 0:
+    raise SystemExit(
+        "reservation_ttl_ms must be positive"
+    )
+
+shared["reservation_ttl_ms"] = ttl
+
+if not isinstance(protected, dict):
+    raise SystemExit(
+        "protected must be an object"
+    )
+
+if not isinstance(
+    protected.get("paths", []),
+    list,
+):
+    raise SystemExit(
+        "protected.paths must be an array"
+    )
+
+all_paths = []
+
+for role in ("frontend", "backend"):
+    for field in (
+        "write",
+        "read",
+        "deny_write",
+    ):
+        all_paths.extend(
+            ownership[role][field]
+        )
+
+all_paths.extend(
+    shared.get("paths", [])
+)
+
+all_paths.extend(
+    protected.get("paths", [])
+)
+
+for item in all_paths:
+    if not isinstance(item, str) or not item:
+        raise SystemExit(
+            "all policy paths must be "
+            "non-empty strings"
+        )
+
+    if os.path.isabs(item):
+        raise SystemExit(
+            f"absolute policy path rejected: "
+            f"{item}"
+        )
+
+    parts = item.replace("\\", "/").split("/")
+
+    if ".." in parts:
+        raise SystemExit(
+            f"path traversal rejected: {item}"
+        )
+
+normalized = {
+    "ownership": ownership,
+    "shared": shared,
+    "protected": {
+        "paths":
+            protected.get(
+                "paths",
+                [],
+            )
+    },
+}
+
+with open(destination, "w") as f:
+    json.dump(
+        normalized,
+        f,
+        indent=2,
+        sort_keys=True,
+    )
+    f.write("\n")
+PY2
+
+    # Allocate ports that are neither listening nor reserved
+    # by any existing War Room state.
+    read -r \
+      FRONTEND_PORT \
+      BACKEND_PORT \
+      BRIDGE_PORT \
+      BOOTSTRAP_PORT < <(
+      python3 - "$WARROOM_HOME/projects" <<'PY2'
+import glob
+import json
+import os
+import socket
+import sys
+
+state_dir = sys.argv[1]
+reserved = set()
+
+for filename in glob.glob(
+    os.path.join(
+        state_dir,
+        "*.json",
+    )
+):
+    try:
+        with open(filename) as f:
+            state = json.load(f)
+
+        for role in (
+            "frontend",
+            "backend",
+            "bridge",
+        ):
+            port = (
+                state.get(role, {})
+                .get("port")
+            )
+
+            if port:
+                reserved.add(int(port))
+    except Exception:
+        continue
+
+def available(port):
+    if port in reserved:
+        return False
+
+    sock = socket.socket(
+        socket.AF_INET,
+        socket.SOCK_STREAM,
+    )
+
+    try:
+        sock.bind(
+            ("127.0.0.1", port)
+        )
+        return True
+    except OSError:
+        return False
+    finally:
+        sock.close()
+
+chosen = []
+
+for port in range(4200, 10000):
+    if available(port):
+        chosen.append(port)
+        reserved.add(port)
+
+        if len(chosen) == 4:
+            break
+
+if len(chosen) != 4:
+    raise SystemExit(
+        "unable to allocate War Room ports"
+    )
+
+print(*chosen)
+PY2
+    )
+
+    echo "=== WAR ROOM ONBOARD ==="
+    echo "alias    : $ALIAS"
+    echo "project  : $PROJECT"
+    echo "id       : $PROJECT_ID"
+    echo "frontend : :$FRONTEND_PORT"
+    echo "backend  : :$BACKEND_PORT"
+    echo "bridge   : :$BRIDGE_PORT"
+    echo
+
+    # Temporary OpenCode runtime used only to create
+    # the two persistent top-level sessions.
+    clear_bootstrap() {
+      if tmux has-session \
+        -t "$BOOTSTRAP_TMUX" \
+        2>/dev/null
+      then
+        tmux kill-session \
+          -t "$BOOTSTRAP_TMUX"
+      fi
+    }
+
+    clear_bootstrap
+
+    printf -v BOOT_CMD '%q ' \
+      opencode \
+      --port "$BOOTSTRAP_PORT" \
+      "$PROJECT"
+
+    echo "→ bootstrapping OpenCode session API"
+
+    tmux new-session \
+      -d \
+      -s "$BOOTSTRAP_TMUX" \
+      "$BOOT_CMD"
+
+    READY=0
+
+    for _ in {1..150}; do
+      if curl -fsS \
+        --max-time 1 \
+        "http://127.0.0.1:${BOOTSTRAP_PORT}/session" \
+        >/dev/null 2>&1
+      then
+        READY=1
+        break
+      fi
+
+      sleep 0.1
+    done
+
+    if [[ "$READY" != "1" ]]; then
+      echo "❌ temporary OpenCode API failed to start"
+      exit 1
+    fi
+
+    FRONTEND_RESP="$(
+      curl -fsS \
+        -X POST \
+        "http://127.0.0.1:${BOOTSTRAP_PORT}/session" \
+        -H 'Content-Type: application/json' \
+        -d "{\"title\":\"WARROOM_${PROJECT_ID}_FRONTEND\"}"
+    )"
+
+    FRONTEND_SESSION="$(
+      printf '%s' "$FRONTEND_RESP" |
+        python3 -c '
+import json
+import os
+import sys
+
+expected = os.path.realpath(sys.argv[1])
+data = json.load(sys.stdin)
+
+actual = os.path.realpath(
+    data.get("directory", "")
+)
+
+if actual != expected:
+    raise SystemExit(
+        f"frontend session directory mismatch: "
+        f"{actual} != {expected}"
+    )
+
+print(data["id"])
+' "$PROJECT"
+    )"
+
+    BACKEND_RESP="$(
+      curl -fsS \
+        -X POST \
+        "http://127.0.0.1:${BOOTSTRAP_PORT}/session" \
+        -H 'Content-Type: application/json' \
+        -d "{\"title\":\"WARROOM_${PROJECT_ID}_BACKEND\"}"
+    )"
+
+    BACKEND_SESSION="$(
+      printf '%s' "$BACKEND_RESP" |
+        python3 -c '
+import json
+import os
+import sys
+
+expected = os.path.realpath(sys.argv[1])
+data = json.load(sys.stdin)
+
+actual = os.path.realpath(
+    data.get("directory", "")
+)
+
+if actual != expected:
+    raise SystemExit(
+        f"backend session directory mismatch: "
+        f"{actual} != {expected}"
+    )
+
+print(data["id"])
+' "$PROJECT"
+    )"
+
+    if [[ "$FRONTEND_SESSION" == "$BACKEND_SESSION" ]]; then
+      echo "❌ OpenCode returned duplicate session IDs"
+      exit 1
+    fi
+
+    echo "✅ frontend session : $FRONTEND_SESSION"
+    echo "✅ backend session  : $BACKEND_SESSION"
+
+    # State is written atomically only after all
+    # validation and session creation succeeded.
+    python3 - \
+      "$STATE" \
+      "$NORMALIZED_POLICY" \
+      "$PROJECT" \
+      "$PROJECT_ID" \
+      "$ALIAS" \
+      "$FRONTEND_PORT" \
+      "$FRONTEND_SESSION" \
+      "$BACKEND_PORT" \
+      "$BACKEND_SESSION" \
+      "$BRIDGE_PORT" <<'PY2'
+import datetime
+import json
+import os
+import sys
+import tempfile
+
+(
+    state_file,
+    policy_file,
+    project,
+    project_id,
+    alias,
+    frontend_port,
+    frontend_session,
+    backend_port,
+    backend_session,
+    bridge_port,
+) = sys.argv[1:11]
+
+with open(policy_file) as f:
+    policy = json.load(f)
+
+state = {
+    "project_id":
+        project_id,
+    "project":
+        os.path.realpath(project),
+
+    "frontend": {
+        "port":
+            int(frontend_port),
+        "session":
+            frontend_session,
+    },
+
+    "backend": {
+        "port":
+            int(backend_port),
+        "session":
+            backend_session,
+    },
+
+    "bridge": {
+        "host":
+            "127.0.0.1",
+        "port":
+            int(bridge_port),
+    },
+
+    "ownership":
+        policy["ownership"],
+
+    "shared":
+        policy["shared"],
+
+    "protected":
+        policy.get(
+            "protected",
+            {"paths": []},
+        ),
+
+    "onboarding": {
+        "alias":
+            alias,
+        "created_at":
+            datetime.datetime.now(
+                datetime.timezone.utc
+            ).isoformat(),
+        "engine":
+            "generic-v1",
+    },
+}
+
+directory = os.path.dirname(
+    state_file
+)
+
+os.makedirs(
+    directory,
+    exist_ok=True,
+)
+
+fd, tmp = tempfile.mkstemp(
+    dir=directory,
+    prefix=".state.",
+    text=True,
+)
+
+try:
+    with os.fdopen(fd, "w") as f:
+        json.dump(
+            state,
+            f,
+            indent=2,
+            sort_keys=True,
+        )
+        f.write("\n")
+
+    os.chmod(tmp, 0o600)
+    os.replace(
+        tmp,
+        state_file,
+    )
+finally:
+    if os.path.exists(tmp):
+        os.unlink(tmp)
+PY2
+
+    printf '{\n  "requests": []\n}\n' \
+      > "$COORD_FILE"
+
+    chmod 600 \
+      "$STATE" \
+      "$COORD_FILE"
+
+    # Sessions are now persisted. Stop only the
+    # temporary API runtime.
+    ONBOARD_SUCCESS=1
+    clear_bootstrap
+
+    trap - EXIT
+    cleanup_onboard
+
+    echo
+    echo "✅ War Room onboarding created"
+    echo "   state : $STATE"
+    echo "   coord : $COORD_FILE"
+    echo
+    echo "Next:"
+    echo "   warroom up $ALIAS"
+    exit 0
+    ;;
+
+  projects)
+    python3 - "$ALIASES_FILE" <<'PY2'
+import hashlib, json, os, re, sys
+
+path = sys.argv[1]
+
+with open(path) as f:
+    data = json.load(f)
+
+if not data:
+    print("No project aliases registered.")
+    raise SystemExit
+
+print("=== WAR ROOM PROJECTS ===")
+
+for alias, project in sorted(data.items()):
+    project = os.path.realpath(project)
+    name = os.path.basename(
+        project.rstrip(os.sep)
+    ) or "project"
+
+    slug = re.sub(
+        r"[^A-Za-z0-9._-]+",
+        "-",
+        name,
+    ).strip("-._").lower() or "project"
+
+    key = hashlib.sha256(
+        project.encode()
+    ).hexdigest()[:12]
+
+    project_id = f"{slug}-{key}"
+
+    hashed_state = os.path.expanduser(
+        f"~/.warroom/projects/{project_id}.json"
+    )
+
+    legacy_state = os.path.expanduser(
+        f"~/.warroom/projects/{name}.json"
+    )
+
+    if (
+        os.path.isfile(hashed_state)
+        or os.path.isfile(legacy_state)
+    ):
+        status = "READY"
+    else:
+        status = "NEEDS ONBOARDING"
+
+    print(
+        f"{alias:<16} {status:<18} {project}"
+    )
+PY2
+    exit 0
+    ;;
+esac
+
+if [[ "$ROLE" == "attach" ]]; then
+  TARGET="${2:-}"
+  PROJECT_REF="${3:-.}"
+else
+  TARGET=""
+  PROJECT_REF="${2:-.}"
+fi
+
+if [[ -d "$PROJECT_REF" ]]; then
+  PROJECT="$(canonical_dir "$PROJECT_REF")"
+else
+  ALIAS_PATH="$(lookup_alias "$PROJECT_REF")"
+
+  if [[ -z "$ALIAS_PATH" ]]; then
+    echo "❌ unknown project or alias:"
+    echo "   $PROJECT_REF"
+    echo
+    echo "Registered aliases:"
+    echo "   warroom projects"
+    exit 1
+  fi
+
+  if ! PROJECT="$(canonical_dir "$ALIAS_PATH")"; then
+    echo "❌ alias points to missing directory:"
+    echo "   $PROJECT_REF -> $ALIAS_PATH"
+    exit 1
+  fi
+fi
+
+PROJECT_NAME="$(basename "$PROJECT")"
+PROJECT_ID="$(project_identity "$PROJECT")"
+
+HASHED_STATE="$WARROOM_HOME/projects/${PROJECT_ID}.json"
+LEGACY_STATE="$WARROOM_HOME/projects/${PROJECT_NAME}.json"
+
+if [[ -f "$HASHED_STATE" ]]; then
+  STATE="$HASHED_STATE"
+elif [[ -f "$LEGACY_STATE" ]]; then
+  # Backward compatibility for projects onboarded before
+  # Project Identity v1.
+  STATE="$LEGACY_STATE"
+else
+  STATE="$HASHED_STATE"
+
+  echo "[warroom] project resolved:"
+  echo "  $PROJECT"
+  echo
+  echo "[warroom] project id:"
+  echo "  $PROJECT_ID"
+  echo
+  echo "[warroom] state file not found:"
+  echo "  $STATE"
+  echo
+  echo "This project needs War Room onboarding first."
+  exit 1
+fi
+
+if [[ "$STATE" == "$LEGACY_STATE" ]]; then
+  DEFAULT_RUNTIME_ID="$PROJECT_NAME"
+else
+  DEFAULT_RUNTIME_ID="$PROJECT_ID"
+fi
+
+RUNTIME_ID="$(
+  python3 - "$STATE" "$DEFAULT_RUNTIME_ID" <<'PY2'
+import json
+import sys
+
+state_file, fallback = sys.argv[1:3]
+
+with open(state_file) as f:
+    state = json.load(f)
+
+print(state.get("project_id") or fallback)
+PY2
+)"
+
+if [[ "$ROLE" == "use" ]]; then
+  HANDOFF="$(
+    set_active_project       "$PROJECT"       "$STATE"       "$PROJECT_NAME" "$PROJECT_ID"
+  )"
+
+  echo "✅ active War Room project"
+  echo "   project : $PROJECT"
+  echo "   handoff : $HANDOFF"
+  exit 0
+fi
+
+read_state() {
+  python3 - "$STATE" "$1" <<'PY'
+import json, sys
+
+path = sys.argv[1]
+key = sys.argv[2]
+
+with open(path) as f:
+    data = json.load(f)
+
+value = data
+for part in key.split("."):
+    value = value[part]
+
+print(value)
+PY
+}
+
+case "$ROLE" in
+  frontend|backend)
+    PORT="$(read_state "$ROLE.port")"
+    SESSION="$(read_state "$ROLE.session")"
+
+    cd "$PROJECT"
+
+    export WARROOM_DIVISION="$ROLE"
+    export WARROOM_STATE="$STATE"
+    export WARROOM_BRIDGE_URL="http://127.0.0.1:$(read_state "bridge.port")"
+    export OPENCODE_PORT="$PORT"
+
+    echo "[warroom] division : $ROLE"
+    echo "[warroom] project  : $PROJECT"
+    echo "[warroom] state    : $STATE"
+    echo "[warroom] port     : $PORT"
+    echo "[warroom] session  : $SESSION"
+
+    exec opencode \
+      --port "$PORT" \
+      --session "$SESSION" \
+      "$PROJECT"
+    ;;
+
+  cockpit)
+    # WAR ROOM COCKPIT V1
+    if ! command -v tmux >/dev/null 2>&1; then
+      echo "❌ tmux is required for cockpit"
+      exit 1
+    fi
+
+    if ! command -v opencode >/dev/null 2>&1; then
+      echo "❌ opencode is required for cockpit"
+      exit 1
+    fi
+
+    FRONTEND_PORT="$(read_state "frontend.port")"
+    BACKEND_PORT="$(read_state "backend.port")"
+
+    FRONTEND_SESSION="$(read_state "frontend.session")"
+    BACKEND_SESSION="$(read_state "backend.session")"
+
+    FRONTEND_URL="http://127.0.0.1:${FRONTEND_PORT}"
+    BACKEND_URL="http://127.0.0.1:${BACKEND_PORT}"
+
+    COCKPIT_NAME="warroom-${RUNTIME_ID}-cockpit"
+
+    # Cockpit attaches to the existing division servers.
+    # It never replaces or merges their independent runtimes.
+    if ! curl -fsS \
+      --max-time 2 \
+      "${FRONTEND_URL}/session" \
+      >/dev/null 2>&1
+    then
+      echo "❌ frontend runtime is not reachable:"
+      echo "   $FRONTEND_URL"
+      echo
+      echo "Run first:"
+      echo "   warroom up $PROJECT"
+      exit 1
+    fi
+
+    if ! curl -fsS \
+      --max-time 2 \
+      "${BACKEND_URL}/session" \
+      >/dev/null 2>&1
+    then
+      echo "❌ backend runtime is not reachable:"
+      echo "   $BACKEND_URL"
+      echo
+      echo "Run first:"
+      echo "   warroom up $PROJECT"
+      exit 1
+    fi
+
+    # Recreate a stale cockpit whose clients have exited.
+    if tmux has-session \
+      -t "$COCKPIT_NAME" \
+      2>/dev/null
+    then
+      PANE_COUNT="$(
+        tmux list-panes \
+          -t "$COCKPIT_NAME" \
+          -F '#{pane_id}' \
+          2>/dev/null |
+          wc -l
+      )"
+
+      DEAD_COUNT="$(
+        tmux list-panes \
+          -t "$COCKPIT_NAME" \
+          -F '#{pane_dead}' \
+          2>/dev/null |
+          grep -c '^1$' || true
+      )"
+
+      if [[ "$PANE_COUNT" -ne 2 ||
+            "$DEAD_COUNT" -ne 0 ]]
+      then
+        tmux kill-session \
+          -t "$COCKPIT_NAME"
+      fi
+    fi
+
+    if ! tmux has-session \
+      -t "$COCKPIT_NAME" \
+      2>/dev/null
+    then
+      printf -v FRONTEND_CMD '%q ' \
+        opencode attach \
+        "$FRONTEND_URL" \
+        --dir "$PROJECT" \
+        --session "$FRONTEND_SESSION"
+
+      printf -v BACKEND_CMD '%q ' \
+        opencode attach \
+        "$BACKEND_URL" \
+        --dir "$PROJECT" \
+        --session "$BACKEND_SESSION"
+
+      tmux new-session \
+        -d \
+        -s "$COCKPIT_NAME" \
+        -n cockpit \
+        "$FRONTEND_CMD"
+
+      tmux split-window \
+        -h \
+        -t "${COCKPIT_NAME}:cockpit" \
+        "$BACKEND_CMD"
+
+      tmux select-layout \
+        -t "${COCKPIT_NAME}:cockpit" \
+        even-horizontal
+
+      tmux select-pane \
+        -t "${COCKPIT_NAME}:cockpit.0" \
+        -T "FRONTEND"
+
+      tmux select-pane \
+        -t "${COCKPIT_NAME}:cockpit.1" \
+        -T "BACKEND"
+
+      tmux set-window-option \
+        -t "${COCKPIT_NAME}:cockpit" \
+        pane-border-status top \
+        >/dev/null
+
+      tmux set-window-option \
+        -t "${COCKPIT_NAME}:cockpit" \
+        pane-border-format \
+        ' #{pane_title} ' \
+        >/dev/null
+
+      tmux select-pane \
+        -t "${COCKPIT_NAME}:cockpit.0"
+    fi
+
+    echo "[warroom] cockpit project : $PROJECT"
+    echo "[warroom] frontend        : $FRONTEND_URL"
+    echo "[warroom] backend         : $BACKEND_URL"
+    echo "[warroom] tmux            : $COCKPIT_NAME"
+
+    if [[ -n "${TMUX:-}" ]]; then
+      tmux switch-client \
+        -t "$COCKPIT_NAME"
+    else
+      tmux attach-session \
+        -t "$COCKPIT_NAME"
+    fi
+    ;;
+
+  attach)
+    if ! command -v tmux >/dev/null 2>&1; then
+      echo "❌ tmux is required"
+      exit 1
+    fi
+
+    case "$TARGET" in
+      frontend|backend|bridge)
+        ;;
+      *)
+        echo "Usage:"
+        echo "  warroom attach frontend [project-path]"
+        echo "  warroom attach backend  [project-path]"
+        echo "  warroom attach bridge   [project-path]"
+        exit 1
+        ;;
+    esac
+
+    TMUX_NAME="warroom-${RUNTIME_ID}-${TARGET}"
+
+    if ! tmux has-session -t "$TMUX_NAME" 2>/dev/null; then
+      echo "❌ tmux session not found:"
+      echo "   $TMUX_NAME"
+      echo
+      echo "Run:"
+      echo "   warroom up $PROJECT"
+      exit 1
+    fi
+
+    echo "[warroom] attaching to $TARGET"
+    echo "[warroom] tmux session: $TMUX_NAME"
+
+    if [[ -n "${TMUX:-}" ]]; then
+      tmux switch-client -t "$TMUX_NAME"
+    else
+      tmux attach-session -t "$TMUX_NAME"
+    fi
+    ;;
+
+  up)
+    if ! command -v tmux >/dev/null 2>&1; then
+      echo "❌ tmux is required for warroom up"
+      exit 1
+    fi
+
+    HANDOFF="$(
+      set_active_project         "$PROJECT"         "$STATE"         "$PROJECT_NAME" "$PROJECT_ID"
+    )"
+
+    echo "[warroom] active project : $PROJECT"
+    echo "[warroom] handoff        : $HANDOFF"
+    echo
+
+    FRONTEND_PORT="$(read_state "frontend.port")"
+    BACKEND_PORT="$(read_state "backend.port")"
+    BRIDGE_PORT="$(read_state "bridge.port")"
+
+    TMUX_BASE="warroom-${RUNTIME_ID}"
+    BRIDGE_TMUX="${TMUX_BASE}-bridge"
+    FRONTEND_TMUX="${TMUX_BASE}-frontend"
+    BACKEND_TMUX="${TMUX_BASE}-backend"
+
+    port_listening() {
+      ss -ltnH 2>/dev/null |
+        awk '{print $4}' |
+        grep -qE ":${1}$"
+    }
+
+    clear_stale_tmux() {
+      local name="$1"
+
+      if tmux has-session -t "$name" 2>/dev/null; then
+        tmux kill-session -t "$name"
+      fi
+    }
+
+    start_component() {
+      local label="$1"
+      local port="$2"
+      local tmux_name="$3"
+      local role="$4"
+
+      if port_listening "$port"; then
+        echo "○ $label already UP :$port"
+        return
+      fi
+
+      clear_stale_tmux "$tmux_name"
+
+      local cmd
+      printf -v cmd '%q %q %q' \
+        "$WARROOM_BIN" \
+        "$role" \
+        "$PROJECT"
+
+      echo "→ starting $label :$port"
+
+      tmux new-session \
+        -d \
+        -s "$tmux_name" \
+        "$cmd"
+
+      for _ in {1..100}; do
+        if port_listening "$port"; then
+          echo "✅ $label UP :$port"
+          return
+        fi
+
+        sleep 0.1
+      done
+
+      echo "❌ $label failed to start :$port"
+      return 1
+    }
+
+    echo "=== WAR ROOM UP ==="
+    echo "project : $PROJECT"
+    echo
+
+    start_component \
+      "bridge" \
+      "$BRIDGE_PORT" \
+      "$BRIDGE_TMUX" \
+      "bridge"
+
+    start_component \
+      "frontend" \
+      "$FRONTEND_PORT" \
+      "$FRONTEND_TMUX" \
+      "frontend"
+
+    start_component \
+      "backend" \
+      "$BACKEND_PORT" \
+      "$BACKEND_TMUX" \
+      "backend"
+
+    SUPERVISOR_ALIAS="$WARROOM_SUPERVISOR_ALIAS"
+    TUNNEL_CLIENT="$WARROOM_TUNNEL_CLIENT"
+
+    supervisor_ready() {
+      local data
+
+      data="$(
+        "$TUNNEL_CLIENT" runtimes status \
+          "$SUPERVISOR_ALIAS" \
+          --json 2>/dev/null
+      )" || return 1
+
+      python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+ok = (
+    d.get("process_running") is True
+    and d.get("healthy") is True
+    and d.get("ready") is True
+    and d.get("runtime_state") == "ready"
+)
+raise SystemExit(0 if ok else 1)
+' <<< "$data"
+    }
+
+    if [[ ! -x "$TUNNEL_CLIENT" ]]; then
+      echo "❌ supervisor tunnel-client missing: $TUNNEL_CLIENT"
+      exit 1
+    fi
+
+    if supervisor_ready; then
+      echo "○ supervisor already READY"
+    else
+      if [[ -z "$WARROOM_TUNNEL_ID" ]]; then
+        echo "❌ supervisor tunnel_id is not configured"
+        echo "   config: $WARROOM_CONFIG"
+        echo
+        echo "Set:"
+        echo '   supervisor.tunnel_id'
+        exit 1
+      fi
+
+      if [[ -z "$WARROOM_RUNTIME_KEY_FILE" ]]; then
+        echo "❌ supervisor runtime_key_file is not configured"
+        echo "   config: $WARROOM_CONFIG"
+        echo
+        echo "Set:"
+        echo '   supervisor.runtime_key_file'
+        exit 1
+      fi
+
+      if [[ ! -f "$WARROOM_RUNTIME_KEY_FILE" ]]; then
+        echo "❌ supervisor runtime key file does not exist"
+        echo "   $WARROOM_RUNTIME_KEY_FILE"
+        exit 1
+      fi
+
+      echo "→ starting supervisor managed tunnel"
+
+      "$TUNNEL_CLIENT" runtimes connect \
+        --alias "$SUPERVISOR_ALIAS" \
+        --profile "$WARROOM_TUNNEL_PROFILE" \
+        --tunnel-id "$WARROOM_TUNNEL_ID" \
+        --runtime-api-key "file:$WARROOM_RUNTIME_KEY_FILE" \
+        --mcp-command "node $WARROOM_LIB_DIR/supervisor-mcp.js"
+
+      for _ in {1..50}; do
+        if supervisor_ready; then
+          echo "✅ supervisor READY"
+          break
+        fi
+        sleep 0.2
+      done
+
+      if ! supervisor_ready; then
+        echo "❌ supervisor failed to become READY"
+        exit 1
+      fi
+    fi
+
+    echo
+    echo "War Room started."
+    echo
+    echo "tmux sessions:"
+    echo "  $FRONTEND_TMUX"
+    echo "  $BACKEND_TMUX"
+    echo "  $BRIDGE_TMUX"
+    ;;
+
+  down)
+    FRONTEND_PORT="$(read_state "frontend.port")"
+    BACKEND_PORT="$(read_state "backend.port")"
+    BRIDGE_PORT="$(read_state "bridge.port")"
+
+    pid_on_port() {
+      ss -ltnp "sport = :$1" 2>/dev/null |
+        sed -n 's/.*pid=\([0-9]\+\).*/\1/p' |
+        head -n1
+    }
+
+    stop_process() {
+      LABEL="$1"
+      PORT="$2"
+      EXPECT="$3"
+
+      PID="$(pid_on_port "$PORT" || true)"
+
+      if [[ -z "$PID" ]]; then
+        echo "○ $LABEL already down :$PORT"
+        return
+      fi
+
+      if [[ ! -r "/proc/$PID/cmdline" ]]; then
+        echo "⚠️  $LABEL PID $PID disappeared"
+        return
+      fi
+
+      OWNER="$(stat -c %u "/proc/$PID" 2>/dev/null || echo -1)"
+
+      if [[ "$OWNER" != "$(id -u)" ]]; then
+        echo "❌ $LABEL :$PORT owned by another user; not touching PID $PID"
+        return 1
+      fi
+
+      CMD="$(
+        tr '\0' ' ' < "/proc/$PID/cmdline"
+      )"
+
+      if [[ "$CMD" != *"$EXPECT"* ]]; then
+        echo "❌ $LABEL :$PORT is not recognized as War Room process"
+        echo "   PID : $PID"
+        echo "   CMD : $CMD"
+        return 1
+      fi
+
+      echo "→ stopping $LABEL PID $PID :$PORT"
+      kill -TERM "$PID"
+
+      for _ in {1..30}; do
+        if ! kill -0 "$PID" 2>/dev/null; then
+          echo "✅ $LABEL stopped"
+          return
+        fi
+        sleep 0.1
+      done
+
+      echo "⚠️  $LABEL did not stop gracefully; sending KILL"
+      kill -KILL "$PID" 2>/dev/null || true
+      echo "✅ $LABEL stopped"
+    }
+
+    echo "=== WAR ROOM DOWN ==="
+
+    SUPERVISOR_ALIAS="$WARROOM_SUPERVISOR_ALIAS"
+    TUNNEL_CLIENT="$WARROOM_TUNNEL_CLIENT"
+
+    if [[ -x "$TUNNEL_CLIENT" ]]; then
+      echo "→ stopping supervisor managed tunnel"
+
+      if "$TUNNEL_CLIENT" runtimes stop \
+        "$SUPERVISOR_ALIAS" >/dev/null 2>&1
+      then
+        echo "✅ supervisor stopped"
+      else
+        echo "○ supervisor already down or not registered"
+      fi
+    else
+      echo "⚠️  tunnel-client missing; supervisor not checked"
+    fi
+
+    stop_process "frontend" "$FRONTEND_PORT" "opencode"
+    stop_process "backend"  "$BACKEND_PORT"  "opencode"
+    stop_process "bridge"   "$BRIDGE_PORT"   "bridge.cjs"
+
+    echo
+    echo "War Room stopped."
+    ;;
+
+  status)
+    FRONTEND_PORT="$(read_state "frontend.port")"
+    BACKEND_PORT="$(read_state "backend.port")"
+    BRIDGE_PORT="$(read_state "bridge.port")"
+
+    port_state() {
+      if ss -ltnH 2>/dev/null |
+         awk '{print $4}' |
+         grep -qE ":${1}$"
+      then
+        echo "UP"
+      else
+        echo "DOWN"
+      fi
+    }
+
+    echo "=== WAR ROOM STATUS ==="
+    echo "project  : $PROJECT"
+    echo "bridge   : $(port_state "$BRIDGE_PORT")  :$BRIDGE_PORT"
+    echo "frontend : $(port_state "$FRONTEND_PORT")  :$FRONTEND_PORT"
+    echo "backend  : $(port_state "$BACKEND_PORT")  :$BACKEND_PORT"
+
+    SUPERVISOR_ALIAS="$WARROOM_SUPERVISOR_ALIAS"
+    TUNNEL_CLIENT="$WARROOM_TUNNEL_CLIENT"
+
+    supervisor_status="DOWN"
+
+    if [[ -x "$TUNNEL_CLIENT" ]]; then
+      SUPERVISOR_JSON="$(
+        "$TUNNEL_CLIENT" runtimes status \
+          "$SUPERVISOR_ALIAS" \
+          --json 2>/dev/null || true
+      )"
+
+      if [[ -n "$SUPERVISOR_JSON" ]]; then
+        supervisor_status="$(
+          python3 -c '
+import json, sys
+
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print("DOWN")
+    raise SystemExit
+
+if (
+    d.get("process_running") is True
+    and d.get("healthy") is True
+    and d.get("ready") is True
+    and d.get("runtime_state") == "ready"
+):
+    print("READY")
+elif d.get("process_running") is True:
+    print("DEGRADED")
+else:
+    print("DOWN")
+' <<< "$SUPERVISOR_JSON"
+        )"
+      fi
+    fi
+
+    echo "supervisor: $supervisor_status"
+
+    if curl -fsS --max-time 2 \
+      "http://127.0.0.1:${BRIDGE_PORT}/status" \
+      >/dev/null 2>&1
+    then
+      echo "api      : HEALTHY"
+    else
+      echo "api      : UNREACHABLE"
+    fi
+    ;;
+
+  doctor)
+    PASS=0
+    FAIL=0
+    WARN=0
+
+    ok() {
+      printf '✅ %-28s %s\n' "$1" "${2:-}"
+      PASS=$((PASS + 1))
+    }
+
+    fail() {
+      printf '❌ %-28s %s\n' "$1" "${2:-}"
+      FAIL=$((FAIL + 1))
+    }
+
+    warn() {
+      printf '⚠️  %-28s %s\n' "$1" "${2:-}"
+      WARN=$((WARN + 1))
+    }
+
+    echo "=== WAR ROOM DOCTOR ==="
+    echo "project : $PROJECT"
+    echo "state   : $STATE"
+    echo
+
+    if python3 - "$STATE" "$PROJECT" <<'PY2'
+import json, os, sys
+
+state_file, project = sys.argv[1:3]
+
+with open(state_file) as f:
+    s = json.load(f)
+
+required = [
+    "project",
+    "frontend",
+    "backend",
+    "bridge",
+    "ownership",
+    "shared",
+]
+
+for key in required:
+    if key not in s:
+        raise SystemExit(1)
+
+if os.path.realpath(s["project"]) != os.path.realpath(project):
+    raise SystemExit(1)
+
+for role in ("frontend", "backend"):
+    if not s[role].get("port"):
+        raise SystemExit(1)
+    if not s[role].get("session"):
+        raise SystemExit(1)
+PY2
+    then
+      ok "State file" "valid"
+    else
+      fail "State file" "invalid or incomplete"
+    fi
+
+    if [[ -d "$PROJECT" ]]; then
+      ok "Project directory" "$PROJECT"
+    else
+      fail "Project directory" "missing"
+    fi
+
+    FRONTEND_PORT="$(read_state "frontend.port")"
+    BACKEND_PORT="$(read_state "backend.port")"
+    BRIDGE_PORT="$(read_state "bridge.port")"
+
+    port_listening() {
+      ss -ltnH 2>/dev/null |
+        awk '{print $4}' |
+        grep -qE ":${1}$"
+    }
+
+    if port_listening "$BRIDGE_PORT"; then
+      ok "Bridge port" ":$BRIDGE_PORT"
+    else
+      fail "Bridge port" ":$BRIDGE_PORT not listening"
+    fi
+
+    if port_listening "$FRONTEND_PORT"; then
+      ok "Frontend port" ":$FRONTEND_PORT"
+    else
+      fail "Frontend port" ":$FRONTEND_PORT not listening"
+    fi
+
+    if port_listening "$BACKEND_PORT"; then
+      ok "Backend port" ":$BACKEND_PORT"
+    else
+      fail "Backend port" ":$BACKEND_PORT not listening"
+    fi
+
+    STATUS_FILE="$(mktemp)"
+    trap 'rm -f "$STATUS_FILE"' EXIT
+
+    if curl -fsS \
+      --max-time 3 \
+      "http://127.0.0.1:${BRIDGE_PORT}/status" \
+      > "$STATUS_FILE"
+    then
+      ok "Bridge API" "/status"
+
+      if python3 - "$STATUS_FILE" <<'PY2'
+import json, sys
+with open(sys.argv[1]) as f:
+    s = json.load(f)
+raise SystemExit(0 if s["frontend"]["reachable"] else 1)
+PY2
+      then
+        ok "Frontend reachable"
+      else
+        fail "Frontend reachable"
+      fi
+
+      if python3 - "$STATUS_FILE" <<'PY2'
+import json, sys
+with open(sys.argv[1]) as f:
+    s = json.load(f)
+raise SystemExit(0 if s["backend"]["reachable"] else 1)
+PY2
+      then
+        ok "Backend reachable"
+      else
+        fail "Backend reachable"
+      fi
+
+      if python3 - "$STATUS_FILE" "$STATE" <<'PY2'
+import json, sys
+
+with open(sys.argv[1]) as f:
+    status = json.load(f)
+
+with open(sys.argv[2]) as f:
+    state = json.load(f)
+
+ok = (
+    status["frontend"]["session"] == state["frontend"]["session"]
+    and
+    status["backend"]["session"] == state["backend"]["session"]
+)
+
+raise SystemExit(0 if ok else 1)
+PY2
+      then
+        ok "Pinned sessions" "match state"
+      else
+        fail "Pinned sessions" "bridge/state mismatch"
+      fi
+    else
+      fail "Bridge API" "unreachable"
+      warn "Frontend reachable" "not verified through bridge"
+      warn "Backend reachable" "not verified through bridge"
+      warn "Pinned sessions" "not verified"
+    fi
+
+    if python3 - "$STATE" <<'PY2'
+import json, sys
+
+with open(sys.argv[1]) as f:
+    s = json.load(f)
+
+o = s["ownership"]
+
+ok = isinstance(o, dict)
+
+for role in ("frontend", "backend"):
+    policy = o.get(role)
+
+    if not isinstance(policy, dict):
+        ok = False
+        continue
+
+    for field in (
+        "write",
+        "read",
+        "deny_write",
+    ):
+        value = policy.get(field)
+
+        if not isinstance(value, list):
+            ok = False
+            continue
+
+        if not all(
+            isinstance(item, str)
+            and item
+            for item in value
+        ):
+            ok = False
+
+raise SystemExit(0 if ok else 1)
+PY2
+    then
+      ok "Ownership policy"
+    else
+      fail "Ownership policy" "unexpected configuration"
+    fi
+
+    if python3 - "$STATE" <<'PY2'
+import json, sys
+
+with open(sys.argv[1]) as f:
+    s = json.load(f)
+
+shared = s["shared"]
+
+paths = shared.get("paths", [])
+
+ok = (
+    shared.get("policy")
+        == "coordinate_before_semantic_change"
+    and isinstance(paths, list)
+    and all(
+        isinstance(item, str)
+        and item
+        for item in paths
+    )
+    and int(
+        shared.get(
+            "reservation_ttl_ms",
+            0,
+        )
+    ) > 0
+)
+
+protected = s.get(
+    "protected",
+    {"paths": []},
+)
+
+if not isinstance(
+    protected.get("paths", []),
+    list,
+):
+    ok = False
+
+raise SystemExit(0 if ok else 1)
+PY2
+    then
+      ok "Shared policy"
+    else
+      fail "Shared policy" "invalid"
+    fi
+
+    COORD_FILE="$HOME/.warroom/runtime/${RUNTIME_ID}-shared.json"
+
+    if [[ -f "$COORD_FILE" ]] &&
+       python3 -m json.tool "$COORD_FILE" >/dev/null 2>&1
+    then
+      ok "Coordination store" "valid JSON"
+    else
+      fail "Coordination store" "$COORD_FILE"
+    fi
+
+    LOCK_FILE="${COORD_FILE}.lock"
+
+    if [[ ! -e "$LOCK_FILE" ]]; then
+      ok "Coordination lock" "clear"
+    else
+      NOW="$(date +%s)"
+      MTIME="$(stat -c %Y "$LOCK_FILE" 2>/dev/null || echo 0)"
+      AGE=$((NOW - MTIME))
+
+      if (( AGE > 30 )); then
+        fail "Coordination lock" "stale (${AGE}s)"
+      else
+        warn "Coordination lock" "active (${AGE}s)"
+      fi
+    fi
+
+    GUARD="$HOME/.config/opencode/plugins/warroom-guard.js"
+
+    if [[ -f "$GUARD" ]] &&
+       node --check "$GUARD" >/dev/null 2>&1
+    then
+      ok "Guard plugin" "syntax OK"
+    else
+      fail "Guard plugin" "missing or invalid"
+    fi
+
+    MCP="$WARROOM_LIB_DIR/mcp.js"
+
+    if [[ -f "$MCP" ]] &&
+       node --check "$MCP" >/dev/null 2>&1
+    then
+      ok "MCP implementation" "syntax OK"
+    else
+      fail "MCP implementation" "missing or invalid"
+    fi
+
+    BRIDGE_JS="$WARROOM_LIB_DIR/bridge.cjs"
+
+    if [[ -f "$BRIDGE_JS" ]] &&
+       node --check "$BRIDGE_JS" >/dev/null 2>&1
+    then
+      ok "Bridge implementation" "syntax OK"
+    else
+      fail "Bridge implementation" "missing or invalid"
+    fi
+
+    SUPERVISOR_MCP="$WARROOM_LIB_DIR/supervisor-mcp.js"
+
+    if [[ -f "$SUPERVISOR_MCP" ]] &&
+       node --check "$SUPERVISOR_MCP" >/dev/null 2>&1
+    then
+      ok "Supervisor MCP" "syntax OK"
+    else
+      fail "Supervisor MCP" "missing or invalid"
+    fi
+
+    TUNNEL_CLIENT="$WARROOM_TUNNEL_CLIENT"
+    SUPERVISOR_ALIAS="$WARROOM_SUPERVISOR_ALIAS"
+
+    if [[ -x "$TUNNEL_CLIENT" ]]; then
+      ok "Tunnel client" "installed"
+    else
+      fail "Tunnel client" "$TUNNEL_CLIENT missing"
+    fi
+
+    SUPERVISOR_STATUS_FILE="$(mktemp)"
+
+    if [[ -x "$TUNNEL_CLIENT" ]] &&
+       "$TUNNEL_CLIENT" runtimes status \
+         "$SUPERVISOR_ALIAS" \
+         --json > "$SUPERVISOR_STATUS_FILE" 2>/dev/null
+    then
+      if python3 - "$SUPERVISOR_STATUS_FILE" <<'PY2'
+import json, sys
+with open(sys.argv[1]) as f:
+    d = json.load(f)
+raise SystemExit(0 if d.get("process_running") is True else 1)
+PY2
+      then
+        ok "Supervisor process" "running"
+      else
+        fail "Supervisor process" "not running"
+      fi
+
+      if python3 - "$SUPERVISOR_STATUS_FILE" <<'PY2'
+import json, sys
+with open(sys.argv[1]) as f:
+    d = json.load(f)
+raise SystemExit(0 if d.get("healthy") is True else 1)
+PY2
+      then
+        ok "Supervisor health" "healthy"
+      else
+        fail "Supervisor health" "unhealthy"
+      fi
+
+      if python3 - "$SUPERVISOR_STATUS_FILE" <<'PY2'
+import json, sys
+with open(sys.argv[1]) as f:
+    d = json.load(f)
+ok = (
+    d.get("ready") is True
+    and d.get("runtime_state") == "ready"
+)
+raise SystemExit(0 if ok else 1)
+PY2
+      then
+        ok "Supervisor runtime" "ready"
+      else
+        fail "Supervisor runtime" "not ready"
+      fi
+    else
+      fail "Supervisor process" "status unavailable"
+      fail "Supervisor health" "status unavailable"
+      fail "Supervisor runtime" "status unavailable"
+    fi
+
+    rm -f "$SUPERVISOR_STATUS_FILE"
+
+    if python3 - \
+      "$HOME/.config/opencode/opencode.json" \
+      "$MCP" <<'PY2'
+import json, os, sys
+
+config, expected = sys.argv[1:3]
+
+with open(config) as f:
+    c = json.load(f)
+
+warroom = c.get("mcp", {}).get("warroom", {})
+command = warroom.get("command", [])
+
+ok = (
+    warroom.get("type") == "local"
+    and os.path.realpath(expected)
+        in [os.path.realpath(x) for x in command if isinstance(x, str)]
+)
+
+raise SystemExit(0 if ok else 1)
+PY2
+    then
+      ok "OpenCode MCP config" "warroom registered"
+    else
+      fail "OpenCode MCP config" "warroom missing/mismatch"
+    fi
+
+    rm -f "$STATUS_FILE"
+    trap - EXIT
+
+    echo
+    echo "=== SUMMARY ==="
+    echo "PASS : $PASS"
+    echo "WARN : $WARN"
+    echo "FAIL : $FAIL"
+
+    if (( FAIL > 0 )); then
+      exit 1
+    fi
+
+    echo
+    echo "✅ War Room healthy"
+    ;;
+
+  bridge)
+    export WARROOM_STATE="$STATE"
+
+    echo "[warroom] starting CONTROL BRIDGE"
+    echo "[warroom] project : $PROJECT"
+    echo "[warroom] state   : $STATE"
+
+    exec node "$WARROOM_LIB_DIR/bridge.cjs"
+    ;;
+
+  *)
+    echo "Usage:"
+    echo "  warroom version"
+    echo "  warroom setup"
+    echo "  warroom doctor-install"
+    echo "  warroom add <alias> <project-path>"
+    echo "  warroom projects"
+    echo "  warroom onboard <alias> <policy-json-file>"
+    echo "  warroom use <project|alias|.>"
+    echo "  warroom active"
+    echo "  warroom frontend [project-path]"
+    echo "  warroom backend  [project-path]"
+    echo "  warroom bridge   [project-path]"
+    echo "  warroom doctor   [project-path]"
+    echo "  warroom status   [project-path]"
+    echo "  warroom down     [project-path]"
+    echo "  warroom up       [project-path]"
+    echo "  warroom attach frontend [project-path]"
+    echo "  warroom attach backend  [project-path]"
+    echo "  warroom attach bridge   [project-path]"
+    exit 1
+    ;;
+esac

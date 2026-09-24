@@ -1,0 +1,8 @@
+{
+  "supervisor": {
+    "alias": "warroom-supervisor",
+    "tunnel_profile": "warroom-supervisor-managed",
+    "tunnel_id": "YOUR_TUNNEL_ID",
+    "runtime_key_file": "~/.config/tunnel-client/secrets/warroom-runtime-key"
+  }
+}
