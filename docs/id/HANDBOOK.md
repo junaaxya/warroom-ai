@@ -8,13 +8,15 @@ Ini adalah manual utama operator untuk menjalankan War Room setelah instalasi.
 
 Untuk setup pertama kali, baca [Instalasi](INSTALLATION.md), [Quick Start](QUICKSTART.md), dan [Project Onboarding](PROJECT-ONBOARDING.md).
 
-Alur setup awal:
+Alur setup awal pada mesin Ubuntu/Debian baru:
 
 ```bash
-bash scripts/install.sh
+bash scripts/bootstrap-ubuntu.sh
 warroom setup
 warroom doctor-install
 ```
+
+Jika semua dependency sudah terinstal dan kompatibel, user advanced dapat menggunakan `bash scripts/install.sh` sebagai pengganti bootstrap.
 
 Setelah sebuah project selesai di-onboard, handbook ini menjelaskan operasi War Room sehari-hari.
 

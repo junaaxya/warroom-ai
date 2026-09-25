@@ -8,7 +8,7 @@ Current documented release: **0.1.0-alpha.1**
 
 For first-time setup, read [Installation](INSTALLATION.md), [Quick Start](QUICKSTART.md), and [Project Onboarding](PROJECT-ONBOARDING.md).
 
-Initial setup flow: `bash scripts/install.sh` → `warroom setup` → `warroom doctor-install`.
+Initial setup flow on a fresh Ubuntu/Debian machine: `bash scripts/bootstrap-ubuntu.sh` → `warroom setup` → `warroom doctor-install`. If all prerequisites are already installed and compatible, advanced users may use `bash scripts/install.sh` instead.
 
 ## 1. The mental model
 

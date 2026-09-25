@@ -41,6 +41,22 @@ separate guard identity separate guard identity│
 
 ## Quick install
 
+For a fresh Ubuntu/Debian machine, use the bootstrap installer. It installs only missing or incompatible prerequisites, skips compatible dependencies that are already available, then installs War Room:
+
+```bash
+bash scripts/bootstrap-ubuntu.sh
+warroom setup
+warroom doctor-install
+```
+
+To check prerequisites without changing the machine:
+
+```bash
+bash scripts/bootstrap-ubuntu.sh --check
+```
+
+If all prerequisites are already installed, advanced users can install only War Room:
+
 ```bash
 bash scripts/install.sh
 warroom setup

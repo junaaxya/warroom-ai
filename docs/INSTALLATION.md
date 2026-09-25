@@ -23,9 +23,29 @@ War Room also uses OpenAI `tunnel-client` for the ChatGPT-facing Supervisor MCP.
 
 Minimum supported versions are not finalized yet; a clean Ubuntu VM compatibility pass is required before production release.
 
-## 2. Install from source
+## 2. Bootstrap or install from source
+
+### Recommended: fresh Ubuntu/Debian machine
 
 From the repository root:
+
+```bash
+bash scripts/bootstrap-ubuntu.sh
+```
+
+The bootstrap checks the host first. Compatible dependencies are skipped; missing or incompatible dependencies are installed before War Room itself is installed.
+
+The current bootstrap checks system tools such as `bash`, `curl`, `git`, `python3`, `tmux`, `ss`/`iproute2`, `unzip`, and `sha256sum`, plus Node.js >=20, npm, OpenCode, and `tunnel-client`.
+
+To perform a read-only dependency audit:
+
+```bash
+bash scripts/bootstrap-ubuntu.sh --check
+```
+
+### Advanced: dependencies already prepared
+
+If all prerequisites are already installed and compatible, install only War Room:
 
 ```bash
 bash scripts/install.sh

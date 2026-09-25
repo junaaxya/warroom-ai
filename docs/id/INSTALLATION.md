@@ -23,9 +23,29 @@ War Room juga menggunakan OpenAI `tunnel-client` untuk Supervisor MCP yang terhu
 
 Versi minimum yang didukung belum difinalkan; compatibility pass pada Ubuntu VM yang bersih masih diperlukan sebelum production release.
 
-## 2. Instalasi dari source
+## 2. Bootstrap atau instalasi dari source
+
+### Direkomendasikan: mesin Ubuntu/Debian baru
 
 Dari root repository:
+
+```bash
+bash scripts/bootstrap-ubuntu.sh
+```
+
+Bootstrap memeriksa host terlebih dahulu. Dependency yang sudah kompatibel akan dilewati; dependency yang belum ada atau tidak kompatibel akan diinstal sebelum War Room diinstal.
+
+Bootstrap saat ini memeriksa tool sistem seperti `bash`, `curl`, `git`, `python3`, `tmux`, `ss`/`iproute2`, `unzip`, dan `sha256sum`, ditambah Node.js >=20, npm, OpenCode, dan `tunnel-client`.
+
+Untuk melakukan audit dependency secara read-only:
+
+```bash
+bash scripts/bootstrap-ubuntu.sh --check
+```
+
+### Advanced: dependency sudah siap
+
+Jika semua prerequisite sudah terinstal dan kompatibel, instal War Room saja:
 
 ```bash
 bash scripts/install.sh

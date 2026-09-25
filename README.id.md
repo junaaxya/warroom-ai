@@ -41,6 +41,22 @@ guard identity terpisah guard identity terpisah│
 
 ## Instalasi cepat
 
+Untuk mesin Ubuntu/Debian baru, gunakan bootstrap installer. Bootstrap hanya menginstal dependency yang belum ada atau tidak kompatibel, melewati dependency yang sudah siap, lalu menginstal War Room:
+
+```bash
+bash scripts/bootstrap-ubuntu.sh
+warroom setup
+warroom doctor-install
+```
+
+Untuk memeriksa kebutuhan sistem tanpa mengubah mesin:
+
+```bash
+bash scripts/bootstrap-ubuntu.sh --check
+```
+
+Jika semua dependency sudah tersedia, user advanced dapat menginstal War Room saja:
+
 ```bash
 bash scripts/install.sh
 warroom setup

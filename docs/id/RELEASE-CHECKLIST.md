@@ -17,7 +17,9 @@
 ## Validation
 
 - [ ] `bash -n bin/warroom`
+- [ ] `bash -n scripts/bootstrap-ubuntu.sh`
 - [ ] `bash -n scripts/install.sh`
+- [ ] `bash tests/test-bootstrap-ubuntu-check.sh`
 - [ ] `bash -n scripts/uninstall.sh`
 - [ ] `bash -n scripts/upgrade.sh`
 - [ ] Node syntax checks lulus
