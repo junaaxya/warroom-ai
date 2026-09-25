@@ -23,57 +23,60 @@ War Room juga menggunakan OpenAI `tunnel-client` untuk Supervisor MCP yang terhu
 
 Versi minimum yang didukung belum difinalkan. Compatibility pass pada Ubuntu 24.04.5 x86_64 VM yang bersih untuk bootstrap, installation, setup, dan `warroom doctor-install` sudah lulus.
 
-## 2. Bootstrap atau instalasi dari source
+## 2. Instal War Room
 
-### Direkomendasikan: mesin Ubuntu/Debian baru
+### Direkomendasikan: standalone release installer
 
-Dari root repository:
+End user tidak perlu clone source repository War Room.
+
+Release War Room terdiri dari:
+
+- `install-warroom.sh` — standalone installer;
+- artifact release `.tar.gz` dengan versi;
+- file checksum `.sha256` yang sesuai.
+
+Standalone installer akan mengunduh release, memverifikasi checksum SHA256, memvalidasi struktur archive, memasang dependency yang belum tersedia, lalu menginstal War Room.
+
+Hosting release publik belum dikonfigurasi. Sampai endpoint produksi tersedia, dapatkan installer dan URL release dari channel distribusi War Room yang resmi.
+
+Jalankan installer yang sudah diunduh menggunakan URL release dari distributor:
+
+```bash
+WARROOM_RELEASE_URL="<RELEASE_TAR_GZ_URL>" \
+WARROOM_CHECKSUM_URL="<RELEASE_SHA256_URL>" \
+bash install-warroom.sh
+```
+
+Jalur distribusi publik normal harus menggunakan HTTPS.
+
+Setelah instalasi selesai, lanjutkan ke [Setup Secure Tunnel](SECURE-TUNNEL-SETUP.md).
+
+### Instalasi source/developer
+
+Maintainer repository dan developer dapat menginstal dari source checkout:
 
 ```bash
 bash scripts/bootstrap-ubuntu.sh
 ```
 
-Bootstrap memeriksa host terlebih dahulu. Dependency yang sudah kompatibel akan dilewati; dependency yang belum ada atau tidak kompatibel akan diinstal sebelum War Room diinstal.
+Bootstrap melewati dependency yang sudah kompatibel dan memasang prerequisite yang belum ada atau tidak kompatibel sebelum menginstal War Room.
 
-Bootstrap saat ini memeriksa tool sistem seperti `bash`, `curl`, `git`, `python3`, `tmux`, `ss`/`iproute2`, `unzip`, dan `sha256sum`, ditambah Node.js >=20, npm, OpenCode, dan `tunnel-client`.
-
-Untuk melakukan audit dependency secara read-only:
+Untuk audit dependency tanpa mengubah mesin:
 
 ```bash
 bash scripts/bootstrap-ubuntu.sh --check
 ```
 
-### Advanced: dependency sudah siap
-
-Jika semua prerequisite sudah terinstal dan kompatibel, instal War Room saja:
+Jika semua prerequisite sudah tersedia:
 
 ```bash
 bash scripts/install.sh
 ```
 
-Root instalasi default:
-
-```text
-~/.local/share/warroom
-```
-
-Symlink launcher default:
-
-```text
-~/.local/bin/warroom
-```
-
-Installer akan:
-
-- memvalidasi source files yang diperlukan
-- membuat backup instalasi War Room yang sudah ada sebelum menggantinya
-- menyalin launcher, Bridge, MCP servers, guard, dependency manifests, dan VERSION
-- menjalankan `npm ci --omit=dev`
-- memasang global OpenCode guard
-- menggabungkan registrasi War Room MCP ke konfigurasi OpenCode
-- membuat launcher symlink
 
 ## 3. Konfigurasi War Room
+
+Sebelum menjalankan setup, ikuti panduan lengkap [Setup Secure Tunnel](SECURE-TUNNEL-SETUP.md) untuk membuat atau memilih Tunnel ID, membuat Runtime API key, dan menyimpan key ke file secret lokal.
 
 Jalankan:
 
@@ -94,7 +97,7 @@ Contoh:
   "supervisor": {
     "alias": "warroom-supervisor",
     "tunnel_profile": "warroom-supervisor-managed",
-    "tunnel_id": "YOUR_TUNNEL_ID",
+    "tunnel_id": "tunnel_YOUR_TUNNEL_ID",
     "runtime_key_file": "/home/user/.config/tunnel-client/secrets/warroom-runtime-key"
   }
 }
@@ -111,13 +114,23 @@ chmod 600 /path/to/runtime-key
 
 ## 4. Secure MCP Tunnel
 
-Gunakan dokumentasi OpenAI Secure MCP Tunnel terbaru untuk membuat/mengonfigurasi tunnel dan runtime credentials milik customer sendiri:
+Untuk alur setup tunnel lengkap, termasuk:
+
+- dari mana mendapatkan Tunnel ID;
+- cara membuat Runtime API key;
+- permission tunnel yang diperlukan;
+- cara menyimpan runtime key dengan permission `600`;
+- apa yang harus diisi pada setiap prompt `warroom setup`;
+- cara memverifikasi tunnel yang benar-benar live;
+- cara menghubungkan tunnel yang sama dari ChatGPT;
+
+ikuti:
+
+[Setup Secure Tunnel](SECURE-TUNNEL-SETUP.md)
+
+Referensi resmi OpenAI:
 
 https://developers.openai.com/api/docs/guides/secure-mcp-tunnels
-
-Command MCP lokal untuk Supervisor adalah `supervisor-mcp.js` yang sudah terpasang di bawah root instalasi War Room.
-
-Secure MCP Tunnel ditujukan untuk konektivitas MCP private dan tidak menyediakan distribusi plugin publik dengan sendirinya.
 
 ## 5. Membuat aplikasi ChatGPT
 

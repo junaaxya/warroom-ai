@@ -41,12 +41,37 @@ separate guard identity separate guard identity│
 
 ## Quick install
 
-For a fresh Ubuntu/Debian machine, use the bootstrap installer. It installs only missing or incompatible prerequisites, skips compatible dependencies that are already available, then installs War Room:
+### Recommended: standalone release installer
+
+End users do not need to clone the source repository.
+
+Download `install-warroom.sh` from the authorized War Room distribution channel, then run it with the release URLs supplied by the distributor:
+
+```bash
+WARROOM_RELEASE_URL="<RELEASE_TAR_GZ_URL>" \
+WARROOM_CHECKSUM_URL="<RELEASE_SHA256_URL>" \
+bash install-warroom.sh
+```
+
+The installer verifies the SHA256 checksum, bootstraps missing dependencies, and installs War Room.
+
+Public release hosting is not configured yet. Production distribution should use HTTPS.
+
+Before running `warroom setup`, follow [Secure Tunnel Setup](docs/SECURE-TUNNEL-SETUP.md).
+
+Then run:
+
+```bash
+warroom setup
+warroom doctor-install
+```
+
+### Source/developer installation
+
+Repository maintainers and developers can install from a source checkout:
 
 ```bash
 bash scripts/bootstrap-ubuntu.sh
-warroom setup
-warroom doctor-install
 ```
 
 To check prerequisites without changing the machine:
@@ -55,13 +80,13 @@ To check prerequisites without changing the machine:
 bash scripts/bootstrap-ubuntu.sh --check
 ```
 
-If all prerequisites are already installed, advanced users can install only War Room:
+If all prerequisites are already compatible:
 
 ```bash
 bash scripts/install.sh
-warroom setup
-warroom doctor-install
 ```
+
+After source installation, use the same [Secure Tunnel Setup](docs/SECURE-TUNNEL-SETUP.md), then run `warroom setup` and `warroom doctor-install`.
 
 Default installed layout:
 

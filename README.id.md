@@ -41,27 +41,53 @@ guard identity terpisah guard identity terpisah│
 
 ## Instalasi cepat
 
-Untuk mesin Ubuntu/Debian baru, gunakan bootstrap installer. Bootstrap hanya menginstal dependency yang belum ada atau tidak kompatibel, melewati dependency yang sudah siap, lalu menginstal War Room:
+### Direkomendasikan: standalone release installer
+
+End user tidak perlu clone source repository.
+
+Download `install-warroom.sh` dari channel distribusi War Room yang resmi, lalu jalankan dengan URL release yang diberikan distributor:
 
 ```bash
-bash scripts/bootstrap-ubuntu.sh
+WARROOM_RELEASE_URL="<RELEASE_TAR_GZ_URL>" \
+WARROOM_CHECKSUM_URL="<RELEASE_SHA256_URL>" \
+bash install-warroom.sh
+```
+
+Installer memverifikasi checksum SHA256, memasang dependency yang belum tersedia, lalu menginstal War Room.
+
+Hosting release publik belum dikonfigurasi. Distribusi produksi harus menggunakan HTTPS.
+
+Sebelum menjalankan `warroom setup`, ikuti [Setup Secure Tunnel](docs/id/SECURE-TUNNEL-SETUP.md).
+
+Setelah itu jalankan:
+
+```bash
 warroom setup
 warroom doctor-install
 ```
 
-Untuk memeriksa kebutuhan sistem tanpa mengubah mesin:
+### Instalasi source/developer
+
+Maintainer repository dan developer dapat menginstal dari source checkout:
+
+```bash
+bash scripts/bootstrap-ubuntu.sh
+```
+
+Untuk memeriksa prerequisite tanpa mengubah mesin:
 
 ```bash
 bash scripts/bootstrap-ubuntu.sh --check
 ```
 
-Jika semua dependency sudah tersedia, user advanced dapat menginstal War Room saja:
+Jika semua prerequisite sudah kompatibel:
 
 ```bash
 bash scripts/install.sh
-warroom setup
-warroom doctor-install
 ```
+
+Setelah instalasi dari source, gunakan [Setup Secure Tunnel](docs/id/SECURE-TUNNEL-SETUP.md) yang sama, lalu jalankan `warroom setup` dan `warroom doctor-install`.
+
 
 Layout instalasi default:
 

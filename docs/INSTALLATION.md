@@ -23,57 +23,60 @@ War Room also uses OpenAI `tunnel-client` for the ChatGPT-facing Supervisor MCP.
 
 Minimum supported versions are not finalized yet. A clean Ubuntu 24.04.5 x86_64 VM compatibility pass for bootstrap, installation, setup, and `warroom doctor-install` has passed.
 
-## 2. Bootstrap or install from source
+## 2. Install War Room
 
-### Recommended: fresh Ubuntu/Debian machine
+### Recommended: standalone release installer
 
-From the repository root:
+End users do not need to clone the War Room source repository.
+
+A War Room release consists of:
+
+- `install-warroom.sh` — the standalone installer;
+- a versioned `.tar.gz` release artifact;
+- the matching `.sha256` checksum file.
+
+The standalone installer downloads the release, verifies its SHA256 checksum, validates the archive layout, bootstraps missing dependencies, and installs War Room.
+
+Public release hosting is not configured yet. Until a production release endpoint exists, obtain the installer and release URLs from the authorized War Room distribution channel.
+
+Run the downloaded installer with the release URLs supplied by the distributor:
+
+```bash
+WARROOM_RELEASE_URL="<RELEASE_TAR_GZ_URL>" \
+WARROOM_CHECKSUM_URL="<RELEASE_SHA256_URL>" \
+bash install-warroom.sh
+```
+
+The normal public distribution path must use HTTPS.
+
+After installation, continue with [Secure Tunnel Setup](SECURE-TUNNEL-SETUP.md).
+
+### Source/developer installation
+
+Repository maintainers and developers can install from a source checkout:
 
 ```bash
 bash scripts/bootstrap-ubuntu.sh
 ```
 
-The bootstrap checks the host first. Compatible dependencies are skipped; missing or incompatible dependencies are installed before War Room itself is installed.
+The bootstrap skips compatible dependencies and installs missing or incompatible prerequisites before installing War Room.
 
-The current bootstrap checks system tools such as `bash`, `curl`, `git`, `python3`, `tmux`, `ss`/`iproute2`, `unzip`, and `sha256sum`, plus Node.js >=20, npm, OpenCode, and `tunnel-client`.
-
-To perform a read-only dependency audit:
+To audit dependencies without changing the machine:
 
 ```bash
 bash scripts/bootstrap-ubuntu.sh --check
 ```
 
-### Advanced: dependencies already prepared
-
-If all prerequisites are already installed and compatible, install only War Room:
+If all prerequisites are already available:
 
 ```bash
 bash scripts/install.sh
 ```
 
-Default installation root:
-
-```text
-~/.local/share/warroom
-```
-
-Default launcher symlink:
-
-```text
-~/.local/bin/warroom
-```
-
-The installer:
-
-- validates required source files
-- backs up an existing War Room installation before replacing it
-- copies launcher, Bridge, MCP servers, guard, dependency manifests, and VERSION
-- runs `npm ci --omit=dev`
-- installs the global OpenCode guard
-- merges the War Room MCP registration into OpenCode config
-- creates the launcher symlink
 
 ## 3. Configure War Room
+
+Before running setup, follow the detailed [Secure Tunnel Setup](SECURE-TUNNEL-SETUP.md) guide to create or select your Tunnel ID, create a Runtime API key, and store the key in a local secret file.
 
 Run:
 
@@ -94,7 +97,7 @@ Example:
   "supervisor": {
     "alias": "warroom-supervisor",
     "tunnel_profile": "warroom-supervisor-managed",
-    "tunnel_id": "YOUR_TUNNEL_ID",
+    "tunnel_id": "tunnel_YOUR_TUNNEL_ID",
     "runtime_key_file": "/home/user/.config/tunnel-client/secrets/warroom-runtime-key"
   }
 }
@@ -111,13 +114,23 @@ chmod 600 /path/to/runtime-key
 
 ## 4. Secure MCP Tunnel
 
-Use the current OpenAI Secure MCP Tunnel documentation to create/configure the customer's own tunnel and runtime credentials:
+For the complete tunnel setup flow, including:
+
+- where to get the Tunnel ID;
+- how to create the Runtime API key;
+- required tunnel permissions;
+- how to store the runtime key with permission `600`;
+- exactly what to enter into each `warroom setup` prompt;
+- how to verify the live tunnel;
+- how to connect the same tunnel from ChatGPT;
+
+follow:
+
+[Secure Tunnel Setup](SECURE-TUNNEL-SETUP.md)
+
+Official OpenAI reference:
 
 https://developers.openai.com/api/docs/guides/secure-mcp-tunnels
-
-The local MCP command for the Supervisor is the installed `supervisor-mcp.js` under the War Room installation root.
-
-Secure MCP Tunnel is intended for private MCP connectivity and does not itself provide public plugin distribution.
 
 ## 5. Create the ChatGPT app
 
