@@ -187,8 +187,8 @@ fi
 if ((${#APT_PACKAGES[@]} > 0)); then
   log
   log "[INSTALL] system packages: ${APT_PACKAGES[*]}"
-  as_root apt-get update
-  as_root apt-get install -y "${APT_PACKAGES[@]}"
+  as_root env DEBIAN_FRONTEND=noninteractive apt-get update
+  as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y "${APT_PACKAGES[@]}"
 else
   skip "system packages already available"
 fi
@@ -202,8 +202,8 @@ if ! node_ok || ! have_cmd npm; then
   trap 'rm -rf "${TMP_NODE:-}" "${TMP_TUNNEL:-}" "${TMP_OPENCODE:-}"' EXIT
   curl -fsSL "https://deb.nodesource.com/setup_${NODE_INSTALL_MAJOR}.x" \
     -o "$TMP_NODE/nodesource_setup.sh"
-  as_root bash "$TMP_NODE/nodesource_setup.sh"
-  as_root apt-get install -y nodejs
+  as_root env DEBIAN_FRONTEND=noninteractive bash "$TMP_NODE/nodesource_setup.sh"
+  as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs
   hash -r
 
   if ! node_ok; then
