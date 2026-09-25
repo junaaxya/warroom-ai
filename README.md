@@ -13,7 +13,7 @@ Each division keeps its own OpenCode process, pinned session, local port, contex
 
 **Current version:** `0.1.0-alpha.1`
 
-> Alpha status: installation, setup, uninstall, upgrade, rollback, state preservation, and installation health checks have been validated in isolated local sandboxes. A clean Ubuntu VM acceptance test is still required before a production release.
+> Alpha status: installation, setup, uninstall, upgrade, rollback, state preservation, and installation health checks have been validated. A clean Ubuntu 24.04.5 x86_64 VM acceptance test for bootstrap, installation, setup, and installation health checks has passed.
 
 ## Architecture
 

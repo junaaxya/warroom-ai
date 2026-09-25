@@ -21,7 +21,7 @@ opencode
 
 War Room juga menggunakan OpenAI `tunnel-client` untuk Supervisor MCP yang terhubung ke ChatGPT.
 
-Versi minimum yang didukung belum difinalkan; compatibility pass pada Ubuntu VM yang bersih masih diperlukan sebelum production release.
+Versi minimum yang didukung belum difinalkan. Compatibility pass pada Ubuntu 24.04.5 x86_64 VM yang bersih untuk bootstrap, installation, setup, dan `warroom doctor-install` sudah lulus.
 
 ## 2. Bootstrap atau instalasi dari source
 

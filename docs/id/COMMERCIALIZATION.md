@@ -30,7 +30,7 @@ https://help.openai.com/en/articles/12584461-developer-mode-and-mcp-apps-in-chat
 
 Selesaikan setidaknya:
 
-- clean Ubuntu VM install test
+- clean Ubuntu VM install test — selesai pada Ubuntu 24.04.5 x86_64 untuk bootstrap, installation, setup, dan `warroom doctor-install` (31 PASS / 0 WARN / 0 FAIL); konektivitas Secure MCP Tunnel belum divalidasi karena acceptance test menggunakan credential tunnel dummy
 - compatibility matrix
 - automated smoke tests
 - license selection dan legal review
