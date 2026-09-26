@@ -35,7 +35,7 @@ Selesaikan setidaknya:
 - compatibility matrix — selesai dengan status platform validated, implemented-but-not-acceptance-tested, dan not-claimed yang didokumentasikan di [Kompatibilitas](COMPATIBILITY.md)
 - automated smoke tests
 - license selection dan legal review
-- third-party notices
+- third-party notices — sudah didokumentasikan untuk model distribusi saat ini di [Third-Party Notices](../../THIRD_PARTY_NOTICES.md); legal review masih pending
 - support/update policy
 - release packaging — selesai dengan versioned `.tar.gz` yang reproducible, checksum SHA256, `latest.json`, standalone verification, dan distribusi HTTPS publik
 - backup/restore guidance

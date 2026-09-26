@@ -191,6 +191,7 @@ Referensi resmi:
 
 - [Instalasi](docs/id/INSTALLATION.md)
 - [Kompatibilitas](docs/id/COMPATIBILITY.md)
+- [Pemberitahuan Pihak Ketiga](THIRD_PARTY_NOTICES.md)
 - [Quick Start](docs/id/QUICKSTART.md)
 - [Penggunaan Harian](docs/id/DAILY-USAGE.md)
 - [Project Onboarding](docs/id/PROJECT-ONBOARDING.md)

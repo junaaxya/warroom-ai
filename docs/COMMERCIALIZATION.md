@@ -35,7 +35,7 @@ Complete at least:
 - compatibility matrix — completed with validated, implemented-but-not-acceptance-tested, and not-claimed platform status documented in [Compatibility](COMPATIBILITY.md)
 - automated smoke tests
 - license selection and legal review
-- third-party notices
+- third-party notices — documented for the current distribution model in [Third-Party Notices](../THIRD_PARTY_NOTICES.md); legal review is still pending
 - support/update policy
 - release packaging — completed with reproducible versioned `.tar.gz`, SHA256 checksum, `latest.json`, standalone verification, and public HTTPS distribution
 - backup/restore guidance
