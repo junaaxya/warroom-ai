@@ -37,17 +37,15 @@ Release War Room terdiri dari:
 
 Standalone installer akan mengunduh release, memverifikasi checksum SHA256, memvalidasi struktur archive, memasang dependency yang belum tersedia, lalu menginstal War Room.
 
-Hosting release publik belum dikonfigurasi. Sampai endpoint produksi tersedia, dapatkan installer dan URL release dari channel distribusi War Room yang resmi.
-
-Jalankan installer yang sudah diunduh menggunakan URL release dari distributor:
+Endpoint release publik sudah tersedia melalui HTTPS. Instal War Room dengan:
 
 ```bash
-WARROOM_RELEASE_URL="<RELEASE_TAR_GZ_URL>" \
-WARROOM_CHECKSUM_URL="<RELEASE_SHA256_URL>" \
-bash install-warroom.sh
+curl -fsSL https://install.lab-ilkom.my.id | bash
 ```
 
-Jalur distribusi publik normal harus menggunakan HTTPS.
+Installer otomatis membaca metadata release terbaru, mengunduh artifact versioned beserta checksum, memverifikasi SHA256, lalu menginstal War Room.
+
+Untuk distribusi custom atau private, override URL lanjutan tetap tersedia melalui `WARROOM_RELEASE_BASE_URL`, `WARROOM_MANIFEST_URL`, `WARROOM_RELEASE_URL`, dan `WARROOM_CHECKSUM_URL`.
 
 Setelah instalasi selesai, lanjutkan ke [Setup Secure Tunnel](SECURE-TUNNEL-SETUP.md).
 

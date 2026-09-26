@@ -45,17 +45,15 @@ separate guard identity separate guard identity│
 
 End users do not need to clone the source repository.
 
-Download `install-warroom.sh` from the authorized War Room distribution channel, then run it with the release URLs supplied by the distributor:
+Install War Room directly from the public HTTPS distribution endpoint:
 
 ```bash
-WARROOM_RELEASE_URL="<RELEASE_TAR_GZ_URL>" \
-WARROOM_CHECKSUM_URL="<RELEASE_SHA256_URL>" \
-bash install-warroom.sh
+curl -fsSL https://install.lab-ilkom.my.id | bash
 ```
 
-The installer verifies the SHA256 checksum, bootstraps missing dependencies, and installs War Room.
+The installer automatically resolves the latest release metadata, downloads the versioned artifact and checksum, verifies SHA256, bootstraps missing dependencies, and installs War Room.
 
-Public release hosting is not configured yet. Production distribution should use HTTPS.
+For custom or private distribution endpoints, advanced URL overrides remain available through `WARROOM_RELEASE_BASE_URL`, `WARROOM_MANIFEST_URL`, `WARROOM_RELEASE_URL`, and `WARROOM_CHECKSUM_URL`.
 
 Before running `warroom setup`, follow [Secure Tunnel Setup](docs/SECURE-TUNNEL-SETUP.md).
 
