@@ -31,12 +31,13 @@ https://help.openai.com/en/articles/12584461-developer-mode-and-mcp-apps-in-chat
 Complete at least:
 
 - clean Ubuntu VM install test — completed on Ubuntu 24.04.5 x86_64 for bootstrap, installation, setup, and `warroom doctor-install` (31 PASS / 0 WARN / 0 FAIL); Secure MCP Tunnel connectivity was not validated because dummy tunnel credentials were used
+- public HTTPS installer acceptance — completed on a fresh Ubuntu 24.04 x86_64 container for `0.1.0-alpha.1`; first install and repeat-install/idempotency passed through `curl -fsSL https://install.lab-ilkom.my.id | bash`; Secure MCP Tunnel connectivity was not part of this test
 - compatibility matrix
 - automated smoke tests
 - license selection and legal review
 - third-party notices
 - support/update policy
-- release packaging
+- release packaging — completed with reproducible versioned `.tar.gz`, SHA256 checksum, `latest.json`, standalone verification, and public HTTPS distribution
 - backup/restore guidance
 - security limitations
 - sanitized screenshots and examples

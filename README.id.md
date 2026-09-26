@@ -13,7 +13,7 @@ Setiap divisi memiliki proses OpenCode, pinned session, port lokal, context, dan
 
 **Versi saat ini:** `0.1.0-alpha.1`
 
-> Status Alpha: installation, setup, uninstall, upgrade, rollback, state preservation, dan installation health checks sudah divalidasi. Acceptance test pada Ubuntu 24.04.5 x86_64 VM yang benar-benar bersih untuk bootstrap, installation, setup, dan installation health checks sudah lulus.
+> Status Alpha: installation, setup, uninstall, upgrade, rollback, state preservation, dan installation health checks sudah divalidasi. Acceptance test pada Ubuntu 24.04.5 x86_64 VM yang benar-benar bersih untuk bootstrap, installation, setup, dan installation health checks sudah lulus. Public HTTPS installer (`curl -fsSL https://install.lab-ilkom.my.id | bash`) juga sudah lulus fresh-install dan repeat-install/idempotency acceptance test pada container Ubuntu 24.04 x86_64. Konektivitas Secure MCP Tunnel bukan bagian dari acceptance test public installer ini.
 
 ## Arsitektur
 

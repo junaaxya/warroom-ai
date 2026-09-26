@@ -13,7 +13,7 @@ Each division keeps its own OpenCode process, pinned session, local port, contex
 
 **Current version:** `0.1.0-alpha.1`
 
-> Alpha status: installation, setup, uninstall, upgrade, rollback, state preservation, and installation health checks have been validated. A clean Ubuntu 24.04.5 x86_64 VM acceptance test for bootstrap, installation, setup, and installation health checks has passed.
+> Alpha status: installation, setup, uninstall, upgrade, rollback, state preservation, and installation health checks have been validated. A clean Ubuntu 24.04.5 x86_64 VM acceptance test for bootstrap, installation, setup, and installation health checks has passed. The public HTTPS installer (`curl -fsSL https://install.lab-ilkom.my.id | bash`) has also passed a fresh Ubuntu 24.04 x86_64 container install and repeat-install/idempotency acceptance test. Secure MCP Tunnel connectivity was not part of the public installer acceptance test.
 
 ## Architecture
 
