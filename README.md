@@ -187,6 +187,7 @@ Official references:
 ## Documentation
 
 - [Installation](docs/INSTALLATION.md)
+- [Compatibility](docs/COMPATIBILITY.md)
 - [Quick Start](docs/QUICKSTART.md)
 - [Daily Usage](docs/DAILY-USAGE.md)
 - [Project Onboarding](docs/PROJECT-ONBOARDING.md)

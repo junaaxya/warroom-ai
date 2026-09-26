@@ -4,6 +4,7 @@ Dokumentasi Bahasa Indonesia ini adalah terjemahan resmi dari dokumentasi Inggri
 
 - [Quick Start](QUICKSTART.md)
 - [Instalasi](INSTALLATION.md)
+- [Kompatibilitas](COMPATIBILITY.md)
 - [Handbook](HANDBOOK.md)
 - [Penggunaan Harian](DAILY-USAGE.md)
 - [Project Onboarding](PROJECT-ONBOARDING.md)

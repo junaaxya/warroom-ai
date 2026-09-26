@@ -32,7 +32,7 @@ Selesaikan setidaknya:
 
 - clean Ubuntu VM install test — selesai pada Ubuntu 24.04.5 x86_64 untuk bootstrap, installation, setup, dan `warroom doctor-install` (31 PASS / 0 WARN / 0 FAIL); konektivitas Secure MCP Tunnel belum divalidasi karena acceptance test menggunakan credential tunnel dummy
 - public HTTPS installer acceptance — selesai pada container Ubuntu 24.04 x86_64 yang fresh untuk `0.1.0-alpha.1`; first install dan repeat-install/idempotency lulus melalui `curl -fsSL https://install.lab-ilkom.my.id | bash`; konektivitas Secure MCP Tunnel bukan bagian dari test ini
-- compatibility matrix
+- compatibility matrix — selesai dengan status platform validated, implemented-but-not-acceptance-tested, dan not-claimed yang didokumentasikan di [Kompatibilitas](COMPATIBILITY.md)
 - automated smoke tests
 - license selection dan legal review
 - third-party notices

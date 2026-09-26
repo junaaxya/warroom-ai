@@ -190,6 +190,7 @@ Referensi resmi:
 ## Dokumentasi
 
 - [Instalasi](docs/id/INSTALLATION.md)
+- [Kompatibilitas](docs/id/COMPATIBILITY.md)
 - [Quick Start](docs/id/QUICKSTART.md)
 - [Penggunaan Harian](docs/id/DAILY-USAGE.md)
 - [Project Onboarding](docs/id/PROJECT-ONBOARDING.md)
