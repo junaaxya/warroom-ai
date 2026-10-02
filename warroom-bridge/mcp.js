@@ -204,6 +204,59 @@ server.registerTool(
 );
 
 server.registerTool(
+  "warroom_task_complete",
+  {
+    description:
+      "Complete a managed War Room task assigned to this division. Use only the task ID and capability included in its task envelope.",
+    inputSchema: z.object({
+      taskId: z.string().min(1).max(128),
+      capability: z.string().min(32).max(256),
+      outcome: z.enum(["completed", "failed", "blocked"]),
+      result: z.string().min(1).max(4000),
+    }),
+  },
+  async ({ taskId, capability, outcome, result }) => {
+    try {
+      const division = WARROOM_DIVISION;
+
+      if (!["frontend", "backend"].includes(division)) {
+        throw new Error(
+          "WARROOM_DIVISION must be frontend or backend"
+        );
+      }
+
+      const state = loadWarroomState();
+      const projectId = state.project_id;
+      const opencodeSession = state[division]?.session;
+
+      if (!projectId || !opencodeSession) {
+        throw new Error(
+          "War Room state lacks task completion identity"
+        );
+      }
+
+      return toolResult(
+        await bridgeRequest("/task/complete", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            taskId,
+            capability,
+            outcome,
+            result,
+            division,
+          }),
+        })
+      );
+    } catch (error) {
+      return toolError(error);
+    }
+  }
+);
+
+server.registerTool(
   "warroom_coordination_request",
   {
     description:

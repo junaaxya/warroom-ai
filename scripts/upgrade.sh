@@ -169,8 +169,11 @@ cp "$SOURCE_ROOT/bin/warroom" \
    "$STAGE/bin/warroom"
 
 cp "$SOURCE_ROOT/warroom-bridge/bridge.cjs" \
+   "$SOURCE_ROOT/warroom-bridge/managed-task.cjs" \
    "$SOURCE_ROOT/warroom-bridge/mcp.js" \
+   "$SOURCE_ROOT/warroom-bridge/message-normalizer.cjs" \
    "$SOURCE_ROOT/warroom-bridge/supervisor-mcp.js" \
+   "$SOURCE_ROOT/warroom-bridge/task-store.cjs" \
    "$SOURCE_ROOT/warroom-bridge/package.json" \
    "$SOURCE_ROOT/warroom-bridge/package-lock.json" \
    "$STAGE/warroom-bridge/"
@@ -186,8 +189,11 @@ chmod 755 \
 
 chmod 644 \
   "$STAGE/warroom-bridge/bridge.cjs" \
+  "$STAGE/warroom-bridge/managed-task.cjs" \
   "$STAGE/warroom-bridge/mcp.js" \
+  "$STAGE/warroom-bridge/message-normalizer.cjs" \
   "$STAGE/warroom-bridge/supervisor-mcp.js" \
+  "$STAGE/warroom-bridge/task-store.cjs" \
   "$STAGE/warroom-bridge/package.json" \
   "$STAGE/warroom-bridge/package-lock.json" \
   "$STAGE/plugins/warroom-guard.js" \
@@ -208,10 +214,19 @@ node --check \
   "$STAGE/warroom-bridge/bridge.cjs"
 
 node --check \
+  "$STAGE/warroom-bridge/managed-task.cjs"
+
+node --check \
   "$STAGE/warroom-bridge/mcp.js"
 
 node --check \
+  "$STAGE/warroom-bridge/message-normalizer.cjs"
+
+node --check \
   "$STAGE/warroom-bridge/supervisor-mcp.js"
+
+node --check \
+  "$STAGE/warroom-bridge/task-store.cjs"
 
 node --check \
   "$STAGE/plugins/warroom-guard.js"

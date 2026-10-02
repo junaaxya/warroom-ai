@@ -91,8 +91,11 @@ cp "$SOURCE_ROOT/bin/warroom" \
    "$INSTALL_DIR/bin/warroom"
 
 cp "$SOURCE_ROOT/warroom-bridge/bridge.cjs" \
+   "$SOURCE_ROOT/warroom-bridge/managed-task.cjs" \
    "$SOURCE_ROOT/warroom-bridge/mcp.js" \
+   "$SOURCE_ROOT/warroom-bridge/message-normalizer.cjs" \
    "$SOURCE_ROOT/warroom-bridge/supervisor-mcp.js" \
+   "$SOURCE_ROOT/warroom-bridge/task-store.cjs" \
    "$SOURCE_ROOT/warroom-bridge/package.json" \
    "$SOURCE_ROOT/warroom-bridge/package-lock.json" \
    "$INSTALL_DIR/warroom-bridge/"
@@ -110,8 +113,11 @@ chmod 755 \
 
 chmod 644 \
   "$INSTALL_DIR/warroom-bridge/bridge.cjs" \
+  "$INSTALL_DIR/warroom-bridge/managed-task.cjs" \
   "$INSTALL_DIR/warroom-bridge/mcp.js" \
+  "$INSTALL_DIR/warroom-bridge/message-normalizer.cjs" \
   "$INSTALL_DIR/warroom-bridge/supervisor-mcp.js" \
+  "$INSTALL_DIR/warroom-bridge/task-store.cjs" \
   "$INSTALL_DIR/warroom-bridge/package.json" \
   "$INSTALL_DIR/warroom-bridge/package-lock.json" \
   "$GUARD_SOURCE"

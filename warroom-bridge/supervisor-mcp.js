@@ -503,11 +503,166 @@ async function sendTo(
   );
 }
 
+async function delegateTask(
+  division,
+  instruction
+) {
+  return bridgeRequest(
+    "/tasks",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type":
+          "application/json",
+      },
+      body: JSON.stringify({
+        division,
+        instruction,
+      }),
+    }
+  );
+}
+
+async function taskStatus(taskId) {
+  return bridgeRequest(
+    `/tasks/${encodeURIComponent(taskId)}`
+  );
+}
+
+async function taskWait(
+  taskId,
+  timeoutMs
+) {
+  const params = new URLSearchParams();
+  params.set("timeoutMs", String(timeoutMs));
+
+  return bridgeRequest(
+    `/tasks/${encodeURIComponent(taskId)}/wait?${params.toString()}`
+  );
+}
+
+server.registerTool(
+  "warroom_task_delegate",
+  {
+    description:
+      "Delegate one managed task to a frontend or backend OpenCode division. Prefer warroom_delegate_frontend or warroom_delegate_backend for work requiring a result. If task is submitted, call warroom_task_wait again for completion.",
+    inputSchema: z.object({
+      division: z.enum([
+        "frontend",
+        "backend",
+      ]),
+      instruction: z.string().min(1).max(4000),
+    }),
+  },
+  async ({ division, instruction }) => {
+    try {
+      return toolResult(
+        await delegateTask(
+          division,
+          instruction
+        )
+      );
+    } catch (error) {
+      return toolError(error);
+    }
+  }
+);
+
+server.registerTool(
+  "warroom_delegate_frontend",
+  {
+    description:
+      "Preferred for frontend work requiring a result. If task is submitted, call warroom_task_wait again for completion.",
+    inputSchema: z.object({
+      instruction: z.string().min(1).max(4000),
+    }),
+  },
+  async ({ instruction }) => {
+    try {
+      return toolResult(
+        await delegateTask(
+          "frontend",
+          instruction
+        )
+      );
+    } catch (error) {
+      return toolError(error);
+    }
+  }
+);
+
+server.registerTool(
+  "warroom_delegate_backend",
+  {
+    description:
+      "Preferred for backend work requiring a result. If task is submitted, call warroom_task_wait again for completion.",
+    inputSchema: z.object({
+      instruction: z.string().min(1).max(4000),
+    }),
+  },
+  async ({ instruction }) => {
+    try {
+      return toolResult(
+        await delegateTask(
+          "backend",
+          instruction
+        )
+      );
+    } catch (error) {
+      return toolError(error);
+    }
+  }
+);
+
+server.registerTool(
+  "warroom_task_status",
+  {
+    description:
+      "Read managed task status from the active War Room bridge without changing task state.",
+    inputSchema: z.object({
+      taskId: z.string().min(1).max(128),
+    }),
+  },
+  async ({ taskId }) => {
+    try {
+      return toolResult(
+        await taskStatus(taskId)
+      );
+    } catch (error) {
+      return toolError(error);
+    }
+  }
+);
+
+server.registerTool(
+  "warroom_task_wait",
+  {
+    description:
+      "Wait for managed task completion for at most 25 seconds. Timeout does not mutate task state.",
+    inputSchema: z.object({
+      taskId: z.string().min(1).max(128),
+      timeoutMs: z.number().int().min(0).max(25000).default(25000),
+    }),
+  },
+  async ({ taskId, timeoutMs }) => {
+    try {
+      return toolResult(
+        await taskWait(
+          taskId,
+          timeoutMs
+        )
+      );
+    } catch (error) {
+      return toolError(error);
+    }
+  }
+);
+
 server.registerTool(
   "warroom_send_frontend",
   {
     description:
-      "Send an engineering instruction or review message from the supervisor to the frontend OpenCode division.",
+      "Fire-and-forget message from the supervisor to the frontend OpenCode division. Delivery is not completion proof; use warroom_delegate_frontend for work requiring a result.",
     inputSchema: z.object({
       message:
         z.string().min(1),
@@ -531,7 +686,7 @@ server.registerTool(
   "warroom_send_backend",
   {
     description:
-      "Send an engineering instruction or review message from the supervisor to the backend OpenCode division.",
+      "Fire-and-forget message from the supervisor to the backend OpenCode division. Delivery is not completion proof; use warroom_delegate_backend for work requiring a result.",
     inputSchema: z.object({
       message:
         z.string().min(1),
@@ -605,7 +760,7 @@ server.registerTool(
   "warroom_read_frontend",
   {
     description:
-      "Read recent messages from the frontend OpenCode session for supervision and review.",
+      "Read recent messages from the frontend OpenCode session. Legacy messages are fire-and-forget; this read is not completion proof.",
     inputSchema: z.object({
       limit:
         z.number()
@@ -633,7 +788,7 @@ server.registerTool(
   "warroom_read_backend",
   {
     description:
-      "Read recent messages from the backend OpenCode session for supervision and review.",
+      "Read recent messages from the backend OpenCode session. Legacy messages are fire-and-forget; this read is not completion proof.",
     inputSchema: z.object({
       limit:
         z.number()

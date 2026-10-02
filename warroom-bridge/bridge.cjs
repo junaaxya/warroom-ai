@@ -3,6 +3,16 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { randomUUID } = require("crypto");
+const {
+  normalizeMessages,
+} = require("./message-normalizer.cjs");
+const {
+  MAX_WAIT_MS,
+  TaskStore,
+} = require("./task-store.cjs");
+const { dispatchManagedTask } = require("./managed-task.cjs");
+
+const taskStores = new Map();
 
 const STATE_FILE =
   process.env.WARROOM_STATE;
@@ -196,15 +206,7 @@ async function getMessages(name, limit = 10) {
 
   const messages = await response.json();
 
-  return messages.map((message) => ({
-    role:
-      message?.info?.role ?? "unknown",
-
-    text: (message.parts ?? [])
-      .filter((part) => part.type === "text")
-      .map((part) => part.text)
-      .join("\n"),
-  }));
+  return normalizeMessages(messages);
 }
 
 function getCoordinationFile() {
@@ -219,6 +221,137 @@ function getCoordinationFile() {
     "runtime",
     `${projectName}-shared.json`
   );
+}
+
+function getTaskStore() {
+  const state = loadState();
+  const projectId = state.project_id || path.basename(state.project);
+  const runtimeDir = path.join(
+    os.homedir(),
+    ".warroom",
+    "runtime"
+  );
+  const key = `${runtimeDir}\0${projectId}`;
+
+  if (!taskStores.has(key)) {
+    taskStores.set(key, new TaskStore({
+      runtimeDir,
+      projectId,
+    }));
+  }
+
+  return taskStores.get(key);
+}
+
+function activeTaskIdentity(division) {
+  const runtime = getRuntime();
+  const target = runtime.divisions[division];
+
+  if (!target) {
+    throw new Error("division is invalid");
+  }
+
+  return {
+    division,
+    projectId:
+      runtime.state.project_id ||
+      path.basename(runtime.state.project),
+    opencodeSession: target.session,
+    target,
+  };
+}
+
+function taskErrorStatus(error, fallback = 400) {
+  if (error?.code === "TASK_DISPATCH_FAILED") {
+    return 502;
+  }
+
+  if (error?.code === "TASK_BUSY") {
+    return 409;
+  }
+
+  if (String(error?.message || error).startsWith("task not found:")) {
+    return 404;
+  }
+
+  return fallback;
+}
+
+async function createManagedTask(body) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new Error("task body must be an object");
+  }
+
+  const { division, instruction } = body;
+  const identity = activeTaskIdentity(division);
+  const store = getTaskStore();
+
+  const result = await dispatchManagedTask({
+    store,
+    identity,
+    instruction,
+    dispatch: ({ task, envelope, target }) =>
+      dispatchTask(task, envelope, target),
+  });
+
+  return {
+    status: result.created ? 202 : 200,
+    body: result,
+  };
+}
+
+function taskPath(pathname) {
+  const match = pathname.match(/^\/tasks\/([^/]+)(?:\/(status|wait))?$/);
+
+  if (!match) {
+    return null;
+  }
+
+  return {
+    taskId: decodeURIComponent(match[1]),
+    action: match[2] || "status",
+  };
+}
+
+function readTaskWaitTimeout(url) {
+  const raw = url.searchParams.get("timeoutMs");
+
+  if (raw === null) {
+    return MAX_WAIT_MS;
+  }
+
+  if (!/^\d+$/.test(raw) || Number(raw) > MAX_WAIT_MS) {
+    throw new Error(`timeoutMs must be 0-${MAX_WAIT_MS}`);
+  }
+
+  return Number(raw);
+}
+
+async function dispatchTask(task, envelope, target) {
+  const response = await fetch(
+    `${target.server}/session/${target.session}/prompt_async`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        messageID: task.opencodeMessageID,
+        parts: [
+          {
+            type: "text",
+            text: envelope,
+          },
+        ],
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(
+      `OpenCode returned HTTP ${response.status} for task ${task.taskId}`
+    );
+  }
 }
 
 function loadCoordinationStore() {
@@ -511,6 +644,72 @@ const server = http.createServer(
           202,
           result
         );
+      }
+
+      if (
+        req.method === "POST" &&
+        url.pathname === "/tasks"
+      ) {
+        try {
+          const body = await readBody(req);
+          const result = await createManagedTask(body);
+
+          return sendJson(res, result.status, result.body);
+        } catch (error) {
+          return sendJson(res, taskErrorStatus(error), {
+            error: String(error?.message || error),
+            task: error.task,
+          });
+        }
+      }
+
+      const managedTask = taskPath(url.pathname);
+
+      if (
+        req.method === "GET" &&
+        managedTask
+      ) {
+        try {
+          const store = getTaskStore();
+
+          if (managedTask.action === "wait") {
+            const result = await store.waitForTask({
+              taskId: managedTask.taskId,
+              timeoutMs: readTaskWaitTimeout(url),
+            });
+
+            return sendJson(res, 200, result);
+          }
+
+          return sendJson(res, 200, {
+            task: store.getTask(managedTask.taskId),
+          });
+        } catch (error) {
+          return sendJson(res, taskErrorStatus(error), {
+            error: String(error?.message || error),
+          });
+        }
+      }
+
+      if (
+        req.method === "POST" &&
+        url.pathname === "/task/complete"
+      ) {
+        try {
+          const body = await readBody(req);
+          const identity = activeTaskIdentity(body.division);
+          const task = getTaskStore().completeTask({
+            ...body,
+            projectId: identity.projectId,
+            opencodeSession: identity.opencodeSession,
+          });
+
+          return sendJson(res, 200, { task });
+        } catch (error) {
+          return sendJson(res, taskErrorStatus(error), {
+            error: String(error?.message || error),
+          });
+        }
       }
 
       if (
