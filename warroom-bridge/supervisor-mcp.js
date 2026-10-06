@@ -6,10 +6,23 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 
+const require = createRequire(import.meta.url);
+const { routeTaskIntent } = require("./task-router.cjs");
+const {
+  delegateAndWait,
+  MAX_TASK_WAIT_SLICE_MS,
+} = require("./managed-delegation-wait.cjs");
+const {
+  updateProjectPolicy,
+} = require("./project-policy-update.cjs");
+const { safeRedactorForState } = require("./secret-redactor.cjs");
+
 const execFileAsync = promisify(execFile);
+const MAX_TASK_WAIT_OVERALL_MS = 120000;
 
 const MODULE_DIR =
   path.dirname(
@@ -87,26 +100,28 @@ async function bridgeRequest(
 }
 
 function toolResult(data) {
+  const redactor = runtimeRedactor();
   return {
     content: [
       {
         type: "text",
-        text: JSON.stringify(data, null, 2),
+        text: JSON.stringify(redactor.redactValue(data), null, 2),
       },
     ],
   };
 }
 
 function toolError(error) {
+  const redactor = runtimeRedactor();
   return {
     isError: true,
     content: [
       {
         type: "text",
         text:
-          error instanceof Error
+          redactor.redactText(error instanceof Error
             ? error.message
-            : String(error),
+            : String(error)),
       },
     ],
   };
@@ -153,6 +168,14 @@ function loadState() {
   );
 }
 
+function runtimeRedactor() {
+  try {
+    return safeRedactorForState(loadState());
+  } catch {
+    return safeRedactorForState({});
+  }
+}
+
 function loadHandoff() {
   const active =
     loadActive();
@@ -187,7 +210,7 @@ function saveHandoff(
   fs.writeFileSync(
     tmp,
     JSON.stringify(
-      handoff,
+      runtimeRedactor().redactValue(handoff),
       null,
       2
     ) + "\n",
@@ -541,6 +564,39 @@ async function taskWait(
   );
 }
 
+async function taskCancel(
+  taskId,
+  expectedProjectId,
+  reason
+) {
+  return bridgeRequest(
+    "/task/cancel",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        taskId,
+        expectedProjectId,
+        reason,
+      }),
+    }
+  );
+}
+
+server.registerTool(
+  "warroom_route_task",
+  {
+    description:
+      "Read-only routing decision, not completion proof. inspection_first requires inspection/decomposition before delegation. Direct warroom_delegate_frontend and warroom_delegate_backend remain available when division is already known.",
+    inputSchema: z.object({
+      instruction: z.string().min(1).max(4000),
+    }),
+  },
+  async ({ instruction }) => toolResult(routeTaskIntent(instruction))
+);
+
 server.registerTool(
   "warroom_task_delegate",
   {
@@ -561,6 +617,36 @@ server.registerTool(
           division,
           instruction
         )
+      );
+    } catch (error) {
+      return toolError(error);
+    }
+  }
+);
+
+server.registerTool(
+  "warroom_delegate_and_wait",
+  {
+    description:
+      "Delegate one managed task, then wait in bounded slices for its explicit callback result. The explicit callback remains completion proof. Timeout does not complete, fail, or cancel task. This tool cannot proactively push result after ChatGPT turn has ended. Direct warroom_delegate_frontend, warroom_delegate_backend, and warroom_task_wait remain available.",
+    inputSchema: z.object({
+      division: z.enum([
+        "frontend",
+        "backend",
+      ]),
+      instruction: z.string().min(1).max(4000),
+      timeoutMs: z.number().int().min(1).max(MAX_TASK_WAIT_SLICE_MS).default(MAX_TASK_WAIT_SLICE_MS),
+      overallTimeoutMs: z.number().int().min(1).max(MAX_TASK_WAIT_OVERALL_MS).default(MAX_TASK_WAIT_OVERALL_MS),
+    }),
+  },
+  async (input) => {
+    try {
+      return toolResult(
+        await delegateAndWait({
+          ...input,
+          delegateTask,
+          taskWait,
+        })
       );
     } catch (error) {
       return toolError(error);
@@ -650,6 +736,32 @@ server.registerTool(
         await taskWait(
           taskId,
           timeoutMs
+        )
+      );
+    } catch (error) {
+      return toolError(error);
+    }
+  }
+);
+
+server.registerTool(
+  "warroom_task_cancel",
+  {
+    description:
+      "Explicit operator cancellation for one active managed task. This is not agent completion and only cancels queued or submitted tasks after exact active-project confirmation.",
+    inputSchema: z.object({
+      taskId: z.string().min(1).max(128),
+      expectedProjectId: z.string().min(1).max(128),
+      reason: z.string().min(1).max(400),
+    }),
+  },
+  async ({ taskId, expectedProjectId, reason }) => {
+    try {
+      return toolResult(
+        await taskCancel(
+          taskId,
+          expectedProjectId,
+          reason
         )
       );
     } catch (error) {
@@ -906,6 +1018,69 @@ server.registerTool(
             state.bridge?.port,
         },
       });
+    } catch (error) {
+      return toolError(error);
+    }
+  }
+);
+
+server.registerTool(
+  "warroom_project_policy_update",
+  {
+    description:
+      "Atomically replace active War Room ownership/shared/protected metadata after verifying expectedProjectId. This changes only active state metadata, preserves runtime identity and sessions, and never modifies project source files.",
+    inputSchema: z.object({
+      expectedProjectId: z.string().min(1),
+      ownership: z.object({
+        frontend: z.object({
+          write: z.array(z.string()),
+          read: z.array(z.string()),
+          deny_write: z.array(z.string()),
+        }),
+        backend: z.object({
+          write: z.array(z.string()),
+          read: z.array(z.string()),
+          deny_write: z.array(z.string()),
+        }),
+      }),
+      shared: z.object({
+        paths: z.array(z.string()),
+        policy: z.literal("coordinate_before_semantic_change"),
+        reservation_ttl_ms: z.number().int(),
+      }),
+      protected: z.object({
+        paths: z.array(z.string()),
+      }),
+      environment: z.object({
+        mode: z.enum(["legacy_inherited", "isolated"]),
+        sources: z.array(z.string()),
+        allow: z.object({
+          frontend: z.array(z.string()),
+          backend: z.array(z.string()),
+        }),
+      }).optional(),
+    }),
+  },
+  async ({
+    expectedProjectId,
+    ownership,
+    shared,
+    protected: protectedPolicy,
+    environment,
+  }) => {
+    try {
+      return toolResult(
+        updateProjectPolicy({
+          active: loadActive(),
+          expectedProjectId,
+          policy: {
+            ownership,
+            shared,
+            protected: protectedPolicy,
+            ...(environment !== undefined && { environment }),
+          },
+        })
+      );
     } catch (error) {
       return toolError(error);
     }
@@ -1309,6 +1484,15 @@ server.registerTool(
         }).default({
           paths: [],
         }),
+
+      environment: z.object({
+        mode: z.enum(["legacy_inherited", "isolated"]),
+        sources: z.array(z.string()),
+        allow: z.object({
+          frontend: z.array(z.string()),
+          backend: z.array(z.string()),
+        }),
+      }).optional(),
     }),
   },
 
@@ -1317,6 +1501,7 @@ server.registerTool(
     ownership,
     shared,
     protected: protectedPolicy,
+    environment,
   }) => {
     try {
       const warroomHome =
@@ -1573,6 +1758,7 @@ server.registerTool(
         shared,
         protected:
           protectedPolicy,
+        ...(environment !== undefined && { environment }),
       };
 
       fs.writeFileSync(

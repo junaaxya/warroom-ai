@@ -48,6 +48,8 @@ config_get() {
     "$default_value" <<'PY2'
 import json
 import os
+import posixpath
+import re
 import sys
 
 config_file, key, default = sys.argv[1:4]
@@ -126,6 +128,51 @@ else
   WARROOM_TUNNEL_CLIENT=""
 fi
 
+WARROOM_SYSTEMD_USER_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+WARROOM_SUPERVISOR_SERVICE="warroom-supervisor.service"
+
+supervisor_ready() {
+  local data
+  [[ -x "$WARROOM_TUNNEL_CLIENT" ]] || return 1
+  data="$("$WARROOM_TUNNEL_CLIENT" runtimes status "$WARROOM_SUPERVISOR_ALIAS" --json 2>/dev/null)" || return 1
+  python3 -c 'import json,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("process_running") is True and d.get("healthy") is True and d.get("ready") is True and d.get("runtime_state")=="ready" else 1)' <<< "$data"
+}
+
+supervisor_require_config() {
+  [[ -x "$WARROOM_TUNNEL_CLIENT" ]] || { echo "❌ supervisor tunnel-client missing: $WARROOM_TUNNEL_CLIENT"; return 1; }
+  if [[ -z "$WARROOM_TUNNEL_ID" || -z "$WARROOM_RUNTIME_KEY_FILE" ]]; then
+    echo "❌ supervisor tunnel_id or runtime_key_file is not configured"
+    echo "   config: $WARROOM_CONFIG"
+    return 1
+  fi
+  [[ -f "$WARROOM_RUNTIME_KEY_FILE" ]] || { echo "❌ supervisor runtime key file does not exist"; echo "   $WARROOM_RUNTIME_KEY_FILE"; return 1; }
+}
+
+supervisor_connect() {
+  supervisor_require_config || return 1
+  "$WARROOM_TUNNEL_CLIENT" runtimes connect --alias "$WARROOM_SUPERVISOR_ALIAS" --profile "$WARROOM_TUNNEL_PROFILE" --tunnel-id "$WARROOM_TUNNEL_ID" --runtime-api-key "file:$WARROOM_RUNTIME_KEY_FILE" --mcp-command "node $WARROOM_LIB_DIR/supervisor-mcp.js"
+}
+
+supervisor_watch() {
+  supervisor_require_config || return 1
+  trap 'exit 0' INT TERM
+
+  while true; do
+    if ! supervisor_ready; then
+      echo "→ supervisor not READY; reconnecting"
+      if ! supervisor_connect; then
+        echo "⚠️ supervisor reconnect failed; retrying in 10s" >&2
+      fi
+    fi
+
+    sleep 10
+  done
+}
+
+supervisor_service_installed() {
+  command -v systemctl >/dev/null 2>&1 && systemctl --user cat "$WARROOM_SUPERVISOR_SERVICE" >/dev/null 2>&1
+}
+
 ALIASES_FILE="$WARROOM_HOME/aliases.json"
 ACTIVE_FILE="$WARROOM_HOME/active-project.json"
 HANDOFF_DIR="$WARROOM_HOME/handoffs"
@@ -200,6 +247,38 @@ value = data.get(alias)
 
 if value:
     print(value)
+PY2
+}
+
+active_project_path() {
+  if [[ ! -f "$ACTIVE_FILE" ]]; then
+    return 1
+  fi
+
+  python3 - "$ACTIVE_FILE" <<'PY2'
+import json
+import os
+import sys
+
+path = sys.argv[1]
+
+try:
+    with open(path) as f:
+        data = json.load(f)
+except Exception:
+    raise SystemExit(1)
+
+project = data.get("project")
+
+if not isinstance(project, str) or not project:
+    raise SystemExit(1)
+
+project = os.path.realpath(project)
+
+if not os.path.isdir(project):
+    raise SystemExit(1)
+
+print(project)
 PY2
 }
 
@@ -983,6 +1062,62 @@ PY2
     exit 0
     ;;
 
+  supervisor)
+    SUPERVISOR_ACTION="${2:-status}"
+    SERVICE_FILE="$WARROOM_SYSTEMD_USER_DIR/$WARROOM_SUPERVISOR_SERVICE"
+    case "$SUPERVISOR_ACTION" in
+      install)
+        command -v systemctl >/dev/null 2>&1 || { echo "❌ systemctl is required for supervisor service install"; exit 1; }
+        supervisor_require_config || exit 1
+        mkdir -p "$WARROOM_SYSTEMD_USER_DIR"
+        cat > "$SERVICE_FILE" <<EOF
+[Unit]
+Description=War Room Supervisor managed tunnel
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=$WARROOM_BIN supervisor supervisor-watch
+ExecStop=$WARROOM_BIN supervisor supervisor-stop
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
+EOF
+        chmod 644 "$SERVICE_FILE"
+        systemctl --user daemon-reload
+        systemctl --user enable --now "$WARROOM_SUPERVISOR_SERVICE"
+        echo "✅ supervisor service installed and started"
+        echo "Optional after reboot without login: loginctl enable-linger ${USER:-$(id -un)}"
+        ;;
+      start)
+        supervisor_service_installed || { echo "❌ supervisor service is not installed"; echo "Run: warroom supervisor install"; exit 1; }
+        systemctl --user start "$WARROOM_SUPERVISOR_SERVICE"
+        ;;
+      status)
+        if supervisor_service_installed; then systemctl --user status --no-pager "$WARROOM_SUPERVISOR_SERVICE"; else echo "○ supervisor service not installed"; fi
+        ;;
+      disable)
+        if supervisor_service_installed; then systemctl --user disable --now "$WARROOM_SUPERVISOR_SERVICE"; echo "✅ supervisor service disabled"; else echo "○ supervisor service not installed"; fi
+        ;;
+      remove)
+        if supervisor_service_installed; then systemctl --user disable --now "$WARROOM_SUPERVISOR_SERVICE"; fi
+        rm -f "$SERVICE_FILE"
+        command -v systemctl >/dev/null 2>&1 && systemctl --user daemon-reload
+        echo "✅ supervisor service removed"
+        ;;
+      supervisor-run) supervisor_ready || supervisor_connect ;;
+      supervisor-watch) supervisor_watch ;;
+      supervisor-stop)
+        [[ -x "$WARROOM_TUNNEL_CLIENT" ]] || { echo "❌ supervisor tunnel-client missing: $WARROOM_TUNNEL_CLIENT"; exit 1; }
+        "$WARROOM_TUNNEL_CLIENT" runtimes stop "$WARROOM_SUPERVISOR_ALIAS"
+        ;;
+      *) echo "Usage: warroom supervisor <install|start|status|disable|remove>"; exit 1 ;;
+    esac
+    exit 0
+    ;;
+
   add)
     ALIAS="${2:-}"
     PROJECT_REF="${3:-}"
@@ -1168,6 +1303,7 @@ protected = policy.get(
     "protected",
     {"paths": []},
 )
+environment = policy.get("environment")
 
 if not isinstance(ownership, dict):
     raise SystemExit(
@@ -1235,6 +1371,81 @@ if not isinstance(protected, dict):
         "protected must be an object"
     )
 
+if environment is not None:
+    if not isinstance(environment, dict):
+        raise SystemExit("environment must be an object")
+
+    if environment.get("mode") not in (
+        "legacy_inherited",
+        "isolated",
+    ):
+        raise SystemExit("environment.mode is invalid")
+
+    sources = environment.get("sources")
+    allow = environment.get("allow")
+
+    if not isinstance(sources, list):
+        raise SystemExit("environment.sources must be an array")
+
+    if not isinstance(allow, dict):
+        raise SystemExit("environment.allow must be an object")
+
+    clean_sources = []
+    seen_sources = set()
+
+    for source_path in sources:
+        if (
+            not isinstance(source_path, str)
+            or not source_path
+            or any(char in source_path for char in "\0\r\n")
+            or os.path.isabs(source_path)
+            or source_path.startswith(("/", "\\"))
+            or (len(source_path) >= 2 and source_path[1] == ":")
+            or ".." in source_path.replace("\\", "/").split("/")
+        ):
+            raise SystemExit("environment source paths must be project-relative")
+
+        source_path = posixpath.normpath(
+            source_path.replace("\\", "/")
+        )
+
+        if source_path == ".":
+            raise SystemExit("environment source paths must be project-relative")
+
+        if source_path not in seen_sources:
+            clean_sources.append(source_path)
+            seen_sources.add(source_path)
+
+    clean_allow = {}
+
+    for role in ("frontend", "backend"):
+        names = allow.get(role)
+
+        if not isinstance(names, list):
+            raise SystemExit(f"environment.allow.{role} must be an array")
+
+        clean_names = []
+        seen_names = set()
+
+        for name in names:
+            if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+                raise SystemExit("environment variable names are invalid")
+
+            if name not in seen_names:
+                clean_names.append(name)
+                seen_names.add(name)
+
+        clean_allow[role] = clean_names
+
+    if set(allow) != {"frontend", "backend"} or set(environment) != {"mode", "sources", "allow"}:
+        raise SystemExit("environment policy contains unsupported fields")
+
+    environment = {
+        "mode": environment["mode"],
+        "sources": clean_sources,
+        "allow": clean_allow,
+    }
+
 if not isinstance(
     protected.get("paths", []),
     list,
@@ -1293,6 +1504,7 @@ normalized = {
                 [],
             )
     },
+    **({"environment": environment} if environment is not None else {}),
 }
 
 with open(destination, "w") as f:
@@ -1445,7 +1657,7 @@ PY2
         -X POST \
         "http://127.0.0.1:${BOOTSTRAP_PORT}/session" \
         -H 'Content-Type: application/json' \
-        -d "{\"title\":\"WARROOM_${PROJECT_ID}_FRONTEND\"}"
+        -d "{\"title\":\"WARROOM_${PROJECT_ID}_FRONTEND\",\"model\":{\"providerID\":\"router9\",\"modelID\":\"ag/gemini-3.8-flash-high\"}}"
     )"
 
     FRONTEND_SESSION="$(
@@ -1477,7 +1689,7 @@ print(data["id"])
         -X POST \
         "http://127.0.0.1:${BOOTSTRAP_PORT}/session" \
         -H 'Content-Type: application/json' \
-        -d "{\"title\":\"WARROOM_${PROJECT_ID}_BACKEND\"}"
+        -d "{\"title\":\"WARROOM_${PROJECT_ID}_BACKEND\",\"model\":{\"providerID\":\"router9\",\"modelID\":\"cx/gpt-5.6-terra\"}}"
     )"
 
     BACKEND_SESSION="$(
@@ -1558,6 +1770,8 @@ state = {
             int(frontend_port),
         "session":
             frontend_session,
+        "model":
+            "router9/ag/gemini-3.8-flash-high",
     },
 
     "backend": {
@@ -1565,6 +1779,8 @@ state = {
             int(backend_port),
         "session":
             backend_session,
+        "model":
+            "router9/cx/gpt-5.6-terra",
     },
 
     "bridge": {
@@ -1585,6 +1801,8 @@ state = {
             "protected",
             {"paths": []},
         ),
+
+    **({"environment": policy["environment"]} if "environment" in policy else {}),
 
     "onboarding": {
         "alias":
@@ -1717,10 +1935,24 @@ esac
 
 if [[ "$ROLE" == "attach" ]]; then
   TARGET="${2:-}"
-  PROJECT_REF="${3:-.}"
+
+  if [[ $# -ge 3 ]]; then
+    PROJECT_REF="$3"
+  elif ! PROJECT_REF="$(active_project_path)"; then
+    echo "❌ no active War Room project"
+    echo "   provide a project path/alias, or use . explicitly"
+    exit 1
+  fi
 else
   TARGET=""
-  PROJECT_REF="${2:-.}"
+
+  if [[ $# -ge 2 ]]; then
+    PROJECT_REF="$2"
+  elif ! PROJECT_REF="$(active_project_path)"; then
+    echo "❌ no active War Room project"
+    echo "   provide a project path/alias, or use . explicitly"
+    exit 1
+  fi
 fi
 
 if [[ -d "$PROJECT_REF" ]]; then
@@ -1825,6 +2057,29 @@ case "$ROLE" in
   frontend|backend)
     PORT="$(read_state "$ROLE.port")"
     SESSION="$(read_state "$ROLE.session")"
+    MODEL="$(
+      python3 - "$STATE" "$ROLE" <<'PY2'
+import json
+import sys
+
+state_file, role = sys.argv[1:3]
+
+with open(state_file) as f:
+    state = json.load(f)
+
+defaults = {
+    "frontend": "router9/ag/gemini-3.8-flash-high",
+    "backend": "router9/cx/gpt-5.6-terra",
+}
+
+model = state.get(role, {}).get("model")
+
+if not model and state.get("onboarding", {}).get("engine") == "generic-v1":
+    model = defaults[role]
+
+print(model or "")
+PY2
+    )"
 
     cd "$PROJECT"
 
@@ -1838,10 +2093,16 @@ case "$ROLE" in
     echo "[warroom] state    : $STATE"
     echo "[warroom] port     : $PORT"
     echo "[warroom] session  : $SESSION"
+    echo "[warroom] model    : ${MODEL:-default}"
 
-    exec opencode \
-      --port "$PORT" \
-      --session "$SESSION" \
+    exec node \
+      "$WARROOM_LIB_DIR/env-broker.cjs" \
+      --launch \
+      "$STATE" \
+      "$ROLE" \
+      "$PORT" \
+      "$SESSION" \
+      "$MODEL" \
       "$PROJECT"
     ;;
 
@@ -2133,68 +2394,31 @@ case "$ROLE" in
     SUPERVISOR_ALIAS="$WARROOM_SUPERVISOR_ALIAS"
     TUNNEL_CLIENT="$WARROOM_TUNNEL_CLIENT"
 
-    supervisor_ready() {
-      local data
+    if supervisor_service_installed; then
+      echo "→ ensuring supervisor systemd user service"
+      systemctl --user start "$WARROOM_SUPERVISOR_SERVICE"
 
-      data="$(
-        "$TUNNEL_CLIENT" runtimes status \
-          "$SUPERVISOR_ALIAS" \
-          --json 2>/dev/null
-      )" || return 1
+      if supervisor_ready; then
+        echo "○ supervisor already READY"
+      else
+        for _ in {1..50}; do
+          if supervisor_ready; then
+            echo "✅ supervisor READY"
+            break
+          fi
+          sleep 0.2
+        done
+      fi
 
-      python3 -c '
-import json, sys
-d = json.load(sys.stdin)
-ok = (
-    d.get("process_running") is True
-    and d.get("healthy") is True
-    and d.get("ready") is True
-    and d.get("runtime_state") == "ready"
-)
-raise SystemExit(0 if ok else 1)
-' <<< "$data"
-    }
-
-    if [[ ! -x "$TUNNEL_CLIENT" ]]; then
-      echo "❌ supervisor tunnel-client missing: $TUNNEL_CLIENT"
-      exit 1
-    fi
-
-    if supervisor_ready; then
+      if ! supervisor_ready; then
+        echo "❌ supervisor systemd service failed to become READY"
+        exit 1
+      fi
+    elif supervisor_ready; then
       echo "○ supervisor already READY"
     else
-      if [[ -z "$WARROOM_TUNNEL_ID" ]]; then
-        echo "❌ supervisor tunnel_id is not configured"
-        echo "   config: $WARROOM_CONFIG"
-        echo
-        echo "Set:"
-        echo '   supervisor.tunnel_id'
-        exit 1
-      fi
-
-      if [[ -z "$WARROOM_RUNTIME_KEY_FILE" ]]; then
-        echo "❌ supervisor runtime_key_file is not configured"
-        echo "   config: $WARROOM_CONFIG"
-        echo
-        echo "Set:"
-        echo '   supervisor.runtime_key_file'
-        exit 1
-      fi
-
-      if [[ ! -f "$WARROOM_RUNTIME_KEY_FILE" ]]; then
-        echo "❌ supervisor runtime key file does not exist"
-        echo "   $WARROOM_RUNTIME_KEY_FILE"
-        exit 1
-      fi
-
       echo "→ starting supervisor managed tunnel"
-
-      "$TUNNEL_CLIENT" runtimes connect \
-        --alias "$SUPERVISOR_ALIAS" \
-        --profile "$WARROOM_TUNNEL_PROFILE" \
-        --tunnel-id "$WARROOM_TUNNEL_ID" \
-        --runtime-api-key "file:$WARROOM_RUNTIME_KEY_FILE" \
-        --mcp-command "node $WARROOM_LIB_DIR/supervisor-mcp.js"
+      supervisor_connect
 
       for _ in {1..50}; do
         if supervisor_ready; then
@@ -2286,7 +2510,11 @@ raise SystemExit(0 if ok else 1)
     SUPERVISOR_ALIAS="$WARROOM_SUPERVISOR_ALIAS"
     TUNNEL_CLIENT="$WARROOM_TUNNEL_CLIENT"
 
-    if [[ -x "$TUNNEL_CLIENT" ]]; then
+    if supervisor_service_installed; then
+      echo "→ stopping supervisor systemd user service"
+      systemctl --user stop "$WARROOM_SUPERVISOR_SERVICE"
+      echo "✅ supervisor stopped"
+    elif [[ -x "$TUNNEL_CLIENT" ]]; then
       echo "→ stopping supervisor managed tunnel"
 
       if "$TUNNEL_CLIENT" runtimes stop \
@@ -2821,6 +3049,9 @@ PY2
     echo "  warroom onboard <alias> <policy-json-file>"
     echo "  warroom use <project|alias|.>"
     echo "  warroom active"
+    echo "  warroom supervisor <install|start|status|disable|remove>"
+    echo "  warroom supervisor <install|start|status|disable|remove>"
+    echo "  warroom supervisor <install|start|status|disable|remove>"
     echo "  warroom frontend [project-path]"
     echo "  warroom backend  [project-path]"
     echo "  warroom bridge   [project-path]"

@@ -8,6 +8,10 @@ const TERMINAL_OUTCOMES = new Set([
   "failed",
   "blocked",
 ]);
+const TERMINAL_STATES = new Set([
+  ...TERMINAL_OUTCOMES,
+  "cancelled",
+]);
 const ACTIVE_STATES = new Set([
   "queued",
   "submitted",
@@ -47,7 +51,7 @@ function canonicalizeInstruction(instruction) {
   return canonical;
 }
 
-function publicTask(task) {
+function publicTask(task, redact = redactCapabilities) {
   return {
     taskId: task.taskId,
     division: task.division,
@@ -59,9 +63,10 @@ function publicTask(task) {
     updatedAt: task.updatedAt,
     state: task.state,
     outcome: task.outcome,
+    cancelledAt: task.cancelledAt,
     result:
       typeof task.result === "string"
-        ? redactCapabilities(task.result)
+        ? redact(task.result)
         : task.result,
   };
 }
@@ -86,6 +91,23 @@ function validResult(value) {
   ) {
     throw new Error(`result must be 1-${MAX_RESULT_LENGTH} characters`);
   }
+}
+
+function validCancellationReason(value, redact = redactCapabilities) {
+  if (typeof value !== "string") {
+    throw new Error("cancellation reason must be 1-400 characters");
+  }
+
+  const canonical = value
+    .normalize("NFC")
+    .replace(/\r\n?/g, "\n")
+    .trim();
+
+  if (!canonical || canonical.length > 400) {
+    throw new Error("cancellation reason must be 1-400 characters");
+  }
+
+  return redact(canonical);
 }
 
 function validCapability(value) {
@@ -126,11 +148,12 @@ function writeAtomic(file, data) {
 }
 
 class TaskStore {
-  constructor({ runtimeDir, projectId }) {
+  constructor({ runtimeDir, projectId, redact = redactCapabilities }) {
     validId(projectId, "projectId");
     this.runtimeDir = runtimeDir;
     this.projectId = projectId;
     this.file = taskFile(runtimeDir, projectId);
+    this.redact = redact;
     this.mutationLock = false;
   }
 
@@ -159,6 +182,12 @@ class TaskStore {
   }
 
   save(store) {
+    for (const task of store.tasks) {
+      if (typeof task.result === "string") {
+        task.result = this.redact(task.result);
+      }
+    }
+
     writeAtomic(this.file, store);
   }
 
@@ -204,7 +233,7 @@ class TaskStore {
       if (activeTask) {
         if (activeTask.requestHash === requestHash) {
           return {
-            task: publicTask(activeTask),
+            task: publicTask(activeTask, this.redact),
             created: false,
           };
         }
@@ -237,7 +266,7 @@ class TaskStore {
       this.save(store);
 
       return {
-        task: publicTask(task),
+        task: publicTask(task, this.redact),
         capability,
         created: true,
       };
@@ -252,7 +281,7 @@ class TaskStore {
       throw new Error(`task not found: ${taskId}`);
     }
 
-    return publicTask(task);
+    return publicTask(task, this.redact);
   }
 
   transition(taskId, expectedState, nextState) {
@@ -276,7 +305,7 @@ class TaskStore {
         task.submittedAt = task.updatedAt;
       }
       this.save(store);
-      return publicTask(task);
+      return publicTask(task, this.redact);
     });
   }
 
@@ -302,7 +331,7 @@ class TaskStore {
       task.state = "dispatch_failed";
       task.updatedAt = new Date().toISOString();
       this.save(store);
-      return publicTask(task);
+      return publicTask(task, this.redact);
     });
   }
 
@@ -330,7 +359,7 @@ class TaskStore {
         throw new Error("project does not match task store");
       }
 
-      const safeResult = redactCapabilities(result);
+      const safeResult = this.redact(result);
       const store = this.load();
       const task = store.tasks.find((item) => item.taskId === taskId);
 
@@ -355,9 +384,9 @@ class TaskStore {
         throw new Error("task capability does not match");
       }
 
-      if (TERMINAL_OUTCOMES.has(task.state)) {
+      if (TERMINAL_STATES.has(task.state)) {
         if (task.state === outcome && task.result === safeResult) {
-          return publicTask(task);
+          return publicTask(task, this.redact);
         }
         throw new Error(
           `task ${taskId} already has terminal outcome ${task.state}`
@@ -374,7 +403,41 @@ class TaskStore {
       task.result = safeResult;
       task.updatedAt = new Date().toISOString();
       this.save(store);
-      return publicTask(task);
+      return publicTask(task, this.redact);
+    });
+  }
+
+  cancelTask({ taskId, projectId, reason }) {
+    return this.serializeMutation(() => {
+      validId(taskId, "taskId");
+      validId(projectId, "projectId");
+      const safeReason = validCancellationReason(reason, this.redact);
+
+      if (projectId !== this.projectId) {
+        throw new Error("project does not match task store");
+      }
+
+      const store = this.load();
+      const task = store.tasks.find((item) => item.taskId === taskId);
+
+      if (!task) {
+        throw new Error(`task not found: ${taskId}`);
+      }
+      if (task.projectId !== projectId) {
+        throw new Error("project does not match task");
+      }
+      if (!ACTIVE_STATES.has(task.state)) {
+        throw new Error(`task ${taskId} is ${task.state}, expected queued or submitted`);
+      }
+
+      const now = new Date().toISOString();
+      task.state = "cancelled";
+      task.outcome = "cancelled";
+      task.result = safeReason;
+      task.cancelledAt = now;
+      task.updatedAt = now;
+      this.save(store);
+      return publicTask(task, this.redact);
     });
   }
 
@@ -425,6 +488,7 @@ module.exports = {
   MAX_RESULT_LENGTH,
   MAX_WAIT_MS,
   TERMINAL_OUTCOMES,
+  TERMINAL_STATES,
   TaskStore,
   canonicalizeInstruction,
   createCapability,

@@ -57,8 +57,13 @@ done
 for path in \
   "$SOURCE_ROOT/bin/warroom" \
   "$SOURCE_ROOT/warroom-bridge/bridge.cjs" \
+  "$SOURCE_ROOT/warroom-bridge/env-broker.cjs" \
+  "$SOURCE_ROOT/warroom-bridge/managed-delegation-wait.cjs" \
+  "$SOURCE_ROOT/warroom-bridge/secret-redactor.cjs" \
   "$SOURCE_ROOT/warroom-bridge/mcp.js" \
   "$SOURCE_ROOT/warroom-bridge/supervisor-mcp.js" \
+  "$SOURCE_ROOT/warroom-bridge/project-policy-update.cjs" \
+  "$SOURCE_ROOT/warroom-bridge/task-router.cjs" \
   "$SOURCE_ROOT/warroom-bridge/package.json" \
   "$SOURCE_ROOT/warroom-bridge/package-lock.json" \
   "$SOURCE_ROOT/plugins/warroom-guard.js"
@@ -91,10 +96,15 @@ cp "$SOURCE_ROOT/bin/warroom" \
    "$INSTALL_DIR/bin/warroom"
 
 cp "$SOURCE_ROOT/warroom-bridge/bridge.cjs" \
-   "$SOURCE_ROOT/warroom-bridge/managed-task.cjs" \
-   "$SOURCE_ROOT/warroom-bridge/mcp.js" \
-   "$SOURCE_ROOT/warroom-bridge/message-normalizer.cjs" \
-   "$SOURCE_ROOT/warroom-bridge/supervisor-mcp.js" \
+    "$SOURCE_ROOT/warroom-bridge/env-broker.cjs" \
+    "$SOURCE_ROOT/warroom-bridge/managed-delegation-wait.cjs" \
+   "$SOURCE_ROOT/warroom-bridge/secret-redactor.cjs" \
+    "$SOURCE_ROOT/warroom-bridge/managed-task.cjs" \
+    "$SOURCE_ROOT/warroom-bridge/mcp.js" \
+    "$SOURCE_ROOT/warroom-bridge/message-normalizer.cjs" \
+    "$SOURCE_ROOT/warroom-bridge/project-policy-update.cjs" \
+    "$SOURCE_ROOT/warroom-bridge/supervisor-mcp.js" \
+    "$SOURCE_ROOT/warroom-bridge/task-router.cjs" \
    "$SOURCE_ROOT/warroom-bridge/task-store.cjs" \
    "$SOURCE_ROOT/warroom-bridge/package.json" \
    "$SOURCE_ROOT/warroom-bridge/package-lock.json" \
@@ -113,10 +123,15 @@ chmod 755 \
 
 chmod 644 \
   "$INSTALL_DIR/warroom-bridge/bridge.cjs" \
+  "$INSTALL_DIR/warroom-bridge/env-broker.cjs" \
+  "$INSTALL_DIR/warroom-bridge/managed-delegation-wait.cjs" \
+  "$INSTALL_DIR/warroom-bridge/secret-redactor.cjs" \
   "$INSTALL_DIR/warroom-bridge/managed-task.cjs" \
   "$INSTALL_DIR/warroom-bridge/mcp.js" \
   "$INSTALL_DIR/warroom-bridge/message-normalizer.cjs" \
+  "$INSTALL_DIR/warroom-bridge/project-policy-update.cjs" \
   "$INSTALL_DIR/warroom-bridge/supervisor-mcp.js" \
+  "$INSTALL_DIR/warroom-bridge/task-router.cjs" \
   "$INSTALL_DIR/warroom-bridge/task-store.cjs" \
   "$INSTALL_DIR/warroom-bridge/package.json" \
   "$INSTALL_DIR/warroom-bridge/package-lock.json" \
@@ -128,6 +143,12 @@ echo "→ installing Node dependencies"
 npm ci \
   --prefix "$INSTALL_DIR/warroom-bridge" \
   --omit=dev
+
+node --check "$INSTALL_DIR/warroom-bridge/env-broker.cjs"
+node --check "$INSTALL_DIR/warroom-bridge/managed-delegation-wait.cjs"
+node --check "$INSTALL_DIR/warroom-bridge/secret-redactor.cjs"
+node --check "$INSTALL_DIR/warroom-bridge/project-policy-update.cjs"
+node --check "$INSTALL_DIR/warroom-bridge/task-router.cjs"
 
 echo
 echo "→ installing OpenCode guard"

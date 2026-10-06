@@ -2,6 +2,10 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import * as z from "zod/v4";
 import fs from "node:fs";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
+const { safeRedactorForState } = require("./secret-redactor.cjs");
 
 const BRIDGE_URL =
   process.env.WARROOM_BRIDGE_URL || "http://127.0.0.1:7777";
@@ -22,6 +26,14 @@ function loadWarroomState() {
   return JSON.parse(
     fs.readFileSync(WARROOM_STATE, "utf8")
   );
+}
+
+function runtimeRedactor() {
+  try {
+    return safeRedactorForState(loadWarroomState());
+  } catch {
+    return safeRedactorForState({});
+  }
 }
 
 const server = new McpServer({
@@ -53,26 +65,29 @@ async function bridgeRequest(path, options = {}) {
 }
 
 function toolResult(data) {
+  const redactor = runtimeRedactor();
   return {
     content: [
       {
         type: "text",
-        text: JSON.stringify(data, null, 2),
+        text: JSON.stringify(redactor.redactValue(data), null, 2),
       },
     ],
   };
 }
 
 function toolError(error) {
+  const redactor = runtimeRedactor();
   return {
     isError: true,
     content: [
       {
         type: "text",
-        text:
+        text: redactor.redactText(
           error instanceof Error
             ? error.message
-            : String(error),
+            : String(error)
+        ),
       },
     ],
   };
@@ -128,6 +143,35 @@ server.registerTool(
     try {
       return toolResult(
         await bridgeRequest("/status")
+      );
+    } catch (error) {
+      return toolError(error);
+    }
+  }
+);
+
+server.registerTool(
+  "warroom_environment_status",
+  {
+    description:
+      "Return safe environment availability for current division. Output contains configured names, source labels, and present/missing/empty status only; never values.",
+    inputSchema: z.object({}),
+  },
+  async () => {
+    try {
+      const division = WARROOM_DIVISION;
+
+      if (![
+        "frontend",
+        "backend",
+      ].includes(division)) {
+        throw new Error(
+          "WARROOM_DIVISION must be frontend or backend"
+        );
+      }
+
+      return toolResult(
+        await bridgeRequest(`/environment/${division}`)
       );
     } catch (error) {
       return toolError(error);

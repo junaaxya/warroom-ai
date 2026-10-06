@@ -68,8 +68,13 @@ fi
 for path in \
   "$SOURCE_ROOT/bin/warroom" \
   "$SOURCE_ROOT/warroom-bridge/bridge.cjs" \
+  "$SOURCE_ROOT/warroom-bridge/env-broker.cjs" \
+  "$SOURCE_ROOT/warroom-bridge/managed-delegation-wait.cjs" \
+  "$SOURCE_ROOT/warroom-bridge/secret-redactor.cjs" \
   "$SOURCE_ROOT/warroom-bridge/mcp.js" \
   "$SOURCE_ROOT/warroom-bridge/supervisor-mcp.js" \
+  "$SOURCE_ROOT/warroom-bridge/project-policy-update.cjs" \
+  "$SOURCE_ROOT/warroom-bridge/task-router.cjs" \
   "$SOURCE_ROOT/warroom-bridge/package.json" \
   "$SOURCE_ROOT/warroom-bridge/package-lock.json" \
   "$SOURCE_ROOT/plugins/warroom-guard.js" \
@@ -169,10 +174,15 @@ cp "$SOURCE_ROOT/bin/warroom" \
    "$STAGE/bin/warroom"
 
 cp "$SOURCE_ROOT/warroom-bridge/bridge.cjs" \
-   "$SOURCE_ROOT/warroom-bridge/managed-task.cjs" \
-   "$SOURCE_ROOT/warroom-bridge/mcp.js" \
-   "$SOURCE_ROOT/warroom-bridge/message-normalizer.cjs" \
-   "$SOURCE_ROOT/warroom-bridge/supervisor-mcp.js" \
+    "$SOURCE_ROOT/warroom-bridge/env-broker.cjs" \
+    "$SOURCE_ROOT/warroom-bridge/managed-delegation-wait.cjs" \
+   "$SOURCE_ROOT/warroom-bridge/secret-redactor.cjs" \
+    "$SOURCE_ROOT/warroom-bridge/managed-task.cjs" \
+    "$SOURCE_ROOT/warroom-bridge/mcp.js" \
+    "$SOURCE_ROOT/warroom-bridge/message-normalizer.cjs" \
+    "$SOURCE_ROOT/warroom-bridge/project-policy-update.cjs" \
+    "$SOURCE_ROOT/warroom-bridge/supervisor-mcp.js" \
+    "$SOURCE_ROOT/warroom-bridge/task-router.cjs" \
    "$SOURCE_ROOT/warroom-bridge/task-store.cjs" \
    "$SOURCE_ROOT/warroom-bridge/package.json" \
    "$SOURCE_ROOT/warroom-bridge/package-lock.json" \
@@ -189,10 +199,15 @@ chmod 755 \
 
 chmod 644 \
   "$STAGE/warroom-bridge/bridge.cjs" \
+  "$STAGE/warroom-bridge/env-broker.cjs" \
+  "$STAGE/warroom-bridge/managed-delegation-wait.cjs" \
+  "$STAGE/warroom-bridge/secret-redactor.cjs" \
   "$STAGE/warroom-bridge/managed-task.cjs" \
   "$STAGE/warroom-bridge/mcp.js" \
   "$STAGE/warroom-bridge/message-normalizer.cjs" \
+  "$STAGE/warroom-bridge/project-policy-update.cjs" \
   "$STAGE/warroom-bridge/supervisor-mcp.js" \
+  "$STAGE/warroom-bridge/task-router.cjs" \
   "$STAGE/warroom-bridge/task-store.cjs" \
   "$STAGE/warroom-bridge/package.json" \
   "$STAGE/warroom-bridge/package-lock.json" \
@@ -212,6 +227,12 @@ bash -n \
 
 node --check \
   "$STAGE/warroom-bridge/bridge.cjs"
+
+node --check "$STAGE/warroom-bridge/env-broker.cjs"
+node --check "$STAGE/warroom-bridge/managed-delegation-wait.cjs"
+node --check "$STAGE/warroom-bridge/secret-redactor.cjs"
+node --check "$STAGE/warroom-bridge/project-policy-update.cjs"
+node --check "$STAGE/warroom-bridge/task-router.cjs"
 
 node --check \
   "$STAGE/warroom-bridge/managed-task.cjs"
@@ -368,6 +389,21 @@ bash -n \
 
 node --check \
   "$INSTALL_DIR/warroom-bridge/bridge.cjs"
+
+node --check \
+  "$INSTALL_DIR/warroom-bridge/env-broker.cjs"
+
+node --check \
+  "$INSTALL_DIR/warroom-bridge/managed-delegation-wait.cjs"
+
+node --check \
+  "$INSTALL_DIR/warroom-bridge/secret-redactor.cjs"
+
+node --check \
+  "$INSTALL_DIR/warroom-bridge/project-policy-update.cjs"
+
+node --check \
+  "$INSTALL_DIR/warroom-bridge/task-router.cjs"
 
 node --check \
   "$INSTALL_DIR/warroom-bridge/mcp.js"

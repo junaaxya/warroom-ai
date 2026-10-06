@@ -157,6 +157,68 @@ test("accepts duplicate identical completion but rejects conflict", async () => 
   }), /terminal outcome/);
 }));
 
+test("operator cancellation releases active lock and rejects late callback", async () => withStore(async (store) => {
+  const queued = await store.createTask({
+    division: "frontend",
+    opencodeSession: "session_frontend",
+    instruction: "Cancel queued fixture.",
+  });
+  const cancelled = store.cancelTask({
+    taskId: queued.task.taskId,
+    projectId: "project_test",
+    reason: "  Operator\r\nrecovery.  ",
+  });
+
+  assert.equal(cancelled.state, "cancelled");
+  assert.equal(cancelled.outcome, "cancelled");
+  assert.equal(cancelled.result, "Operator\nrecovery.");
+  assert.ok(cancelled.cancelledAt);
+  const replacement = store.createTask({
+    division: "frontend",
+    opencodeSession: "session_frontend",
+    instruction: "Replacement fixture.",
+  });
+  assert.equal(replacement.created, true);
+  assert.throws(
+    () => store.completeTask(completion(queued)),
+    /terminal outcome cancelled/
+  );
+}));
+
+test("operator cancellation accepts submitted task and redacts its reason", async () => withStore(async (store) => {
+  const submitted = await createSubmittedTask(store);
+  const cancelled = store.cancelTask({
+    taskId: submitted.task.taskId,
+    projectId: "project_test",
+    reason: `Operator recovery ${submitted.capability}`,
+  });
+
+  assert.equal(cancelled.state, "cancelled");
+  assert.equal(cancelled.result, "Operator recovery [REDACTED]");
+  assert.equal(JSON.stringify(cancelled).includes(submitted.capability), false);
+}));
+
+test("operator cancellation only accepts active task in matching project", async () => withStore(async (store) => {
+  const submitted = await createSubmittedTask(store);
+  assert.throws(
+    () => store.cancelTask({
+      taskId: submitted.task.taskId,
+      projectId: "project_other",
+      reason: "Wrong project.",
+    }),
+    /project does not match task store/
+  );
+  store.completeTask(completion(submitted));
+  assert.throws(
+    () => store.cancelTask({
+      taskId: submitted.task.taskId,
+      projectId: "project_test",
+      reason: "Too late.",
+    }),
+    /expected queued or submitted/
+  );
+}));
+
 test("rejects malformed or oversized result and terminal overwrite", async () => withStore(async (store) => {
   const created = await createSubmittedTask(store);
 

@@ -5,7 +5,14 @@ const {
 } = require("./task-store.cjs");
 const { redactCapabilities } = require("./message-normalizer.cjs");
 
-async function dispatchManagedTask({ store, identity, instruction, dispatch }) {
+async function dispatchManagedTask({
+  store,
+  identity,
+  instruction,
+  dispatch,
+  redact,
+}) {
+  const redactError = redact || store.redact || redactCapabilities;
   const canonicalInstruction = canonicalizeInstruction(instruction);
   const capability = createCapability();
   const created = store.createTask({
@@ -44,7 +51,7 @@ async function dispatchManagedTask({ store, identity, instruction, dispatch }) {
       dispatchFailed = store.getTask(created.task.taskId);
     }
 
-    const safeError = new Error(redactCapabilities(String(error)));
+    const safeError = new Error(redactError(String(error)));
     safeError.code = "TASK_DISPATCH_FAILED";
     safeError.task = dispatchFailed;
     throw safeError;

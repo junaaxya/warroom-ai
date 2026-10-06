@@ -1,3 +1,7 @@
+const {
+  redactText: redactSecretText,
+} = require("./secret-redactor.cjs");
+
 const MESSAGE_INFO_FIELDS = [
   "id",
   "messageID",
@@ -17,12 +21,14 @@ const MESSAGE_INFO_TYPES = {
 };
 
 function redactCapabilities(text) {
-  return typeof text === "string"
-    ? text.replace(/WRM_CAP_[A-Za-z0-9_-]+/g, "[REDACTED]")
-    : text;
+  return redactSecretText(text, {});
 }
 
-function normalizeMessage(message) {
+function redactText(text, redact = redactCapabilities) {
+  return redactCapabilities(redact(text));
+}
+
+function normalizeMessage(message, redact = redactCapabilities) {
   const info = {};
 
   for (const field of MESSAGE_INFO_FIELDS) {
@@ -46,7 +52,7 @@ function normalizeMessage(message) {
         : "unknown",
     text: parts
       .filter((part) => part?.type === "text" && typeof part.text === "string")
-      .map((part) => redactCapabilities(part.text))
+      .map((part) => redactText(part.text, redact))
       .join("\n"),
   };
 
@@ -57,14 +63,15 @@ function normalizeMessage(message) {
   return normalized;
 }
 
-function normalizeMessages(messages) {
+function normalizeMessages(messages, redact) {
   return Array.isArray(messages)
-    ? messages.map(normalizeMessage)
+    ? messages.map((message) => normalizeMessage(message, redact))
     : [];
 }
 
 module.exports = {
   redactCapabilities,
+  redactText,
   normalizeMessage,
   normalizeMessages,
 };

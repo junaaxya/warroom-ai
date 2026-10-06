@@ -6,6 +6,8 @@ const { randomUUID } = require("crypto");
 const {
   normalizeMessages,
 } = require("./message-normalizer.cjs");
+const { safeRedactorForState } = require("./secret-redactor.cjs");
+const { environmentStatus } = require("./env-broker.cjs");
 const {
   MAX_WAIT_MS,
   TaskStore,
@@ -13,6 +15,11 @@ const {
 const { dispatchManagedTask } = require("./managed-task.cjs");
 
 const taskStores = new Map();
+
+const DEFAULT_DIVISION_MODELS = Object.freeze({
+  frontend: "router9/ag/gemini-3.8-flash-high",
+  backend: "router9/cx/gpt-5.6-terra",
+});
 
 const STATE_FILE =
   process.env.WARROOM_STATE;
@@ -30,11 +37,47 @@ function loadState() {
   );
 }
 
+function runtimeRedactor() {
+  try {
+    return safeRedactorForState(loadState());
+  } catch {
+    return safeRedactorForState({});
+  }
+}
+
+function divisionModel(state, division) {
+  const configured = state[division]?.model;
+
+  if (typeof configured === "string" && configured.trim()) {
+    return configured;
+  }
+
+  if (state.onboarding?.engine === "generic-v1") {
+    return DEFAULT_DIVISION_MODELS[division];
+  }
+
+  return undefined;
+}
+
+function promptModel(model) {
+  if (!model) {
+    return undefined;
+  }
+
+  const slash = model.indexOf("/");
+
+  if (slash <= 0 || slash === model.length - 1) {
+    return undefined;
+  }
+
+  return {
+    providerID: model.slice(0, slash),
+    modelID: model.slice(slash + 1),
+  };
+}
+
 function getRuntime() {
   const state = loadState();
-
-  const host =
-    state.bridge?.host || "127.0.0.1";
 
   const bridgePort =
     Number(state.bridge?.port || 7777);
@@ -48,12 +91,14 @@ function getRuntime() {
         server:
           `http://127.0.0.1:${state.frontend.port}`,
         session: state.frontend.session,
+        model: divisionModel(state, "frontend"),
       },
 
       backend: {
         server:
           `http://127.0.0.1:${state.backend.port}`,
         session: state.backend.session,
+        model: divisionModel(state, "backend"),
       },
     },
   };
@@ -64,7 +109,7 @@ function sendJson(res, status, data) {
     "Content-Type": "application/json",
   });
 
-  res.end(JSON.stringify(data, null, 2));
+  res.end(JSON.stringify(runtimeRedactor().redactValue(data), null, 2));
 }
 
 async function readBody(req) {
@@ -89,6 +134,7 @@ async function checkDivision(name) {
       reachable: response.ok,
       server: division.server,
       session: division.session,
+      model: division.model,
     };
   } catch (error) {
     return {
@@ -96,13 +142,14 @@ async function checkDivision(name) {
       reachable: false,
       server: division.server,
       session: division.session,
+      model: division.model,
       error: String(error),
     };
   }
 }
 
 async function sendMessage(from, to, message) {
-  const { divisions } = getRuntime();
+  const { divisions, state } = getRuntime();
 
   const target = divisions[to];
 
@@ -125,7 +172,7 @@ async function sendMessage(from, to, message) {
     `FROM: ${from}`,
     `TO: ${to}`,
     "",
-    message,
+    safeRedactorForState(state).redactText(message),
   ].join("\n");
 
   const url =
@@ -137,6 +184,9 @@ async function sendMessage(from, to, message) {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
+      ...(promptModel(target.model) && {
+        model: promptModel(target.model),
+      }),
       parts: [
         {
           type: "text",
@@ -176,7 +226,7 @@ async function bestEffortNotify(
   } catch (error) {
     console.error(
       `[warroom] coordination notification ${from} -> ${to} failed:`,
-      String(error)
+      runtimeRedactor().redactText(String(error))
     );
 
     return false;
@@ -206,7 +256,7 @@ async function getMessages(name, limit = 10) {
 
   const messages = await response.json();
 
-  return normalizeMessages(messages);
+  return normalizeMessages(messages, runtimeRedactor().redactText);
 }
 
 function getCoordinationFile() {
@@ -237,6 +287,7 @@ function getTaskStore() {
     taskStores.set(key, new TaskStore({
       runtimeDir,
       projectId,
+      redact: (value) => runtimeRedactor().redactText(value),
     }));
   }
 
@@ -283,13 +334,15 @@ async function createManagedTask(body) {
   }
 
   const { division, instruction } = body;
+  const safeInstruction = runtimeRedactor().redactText(instruction);
   const identity = activeTaskIdentity(division);
   const store = getTaskStore();
 
   const result = await dispatchManagedTask({
     store,
     identity,
-    instruction,
+    instruction: safeInstruction,
+    redact: (value) => runtimeRedactor().redactText(value),
     dispatch: ({ task, envelope, target }) =>
       dispatchTask(task, envelope, target),
   });
@@ -337,6 +390,9 @@ async function dispatchTask(task, envelope, target) {
       },
       body: JSON.stringify({
         messageID: task.opencodeMessageID,
+        ...(promptModel(target.model) && {
+          model: promptModel(target.model),
+        }),
         parts: [
           {
             type: "text",
@@ -381,10 +437,11 @@ function loadCoordinationStore() {
 function saveCoordinationStore(store) {
   const file = getCoordinationFile();
   const temp = `${file}.tmp`;
+  const safeStore = runtimeRedactor().redactValue(store);
 
   fs.writeFileSync(
     temp,
-    JSON.stringify(store, null, 2) + "\n"
+    JSON.stringify(safeStore, null, 2) + "\n"
   );
 
   fs.renameSync(temp, file);
@@ -493,7 +550,7 @@ function createCoordinationRequest(
     to,
     path: matched.path,
     sharedPattern: matched.pattern,
-    reason: reason || "",
+    reason: runtimeRedactor().redactText(reason || ""),
     status: "pending",
     createdAt:
       new Date().toISOString(),
@@ -613,6 +670,20 @@ const server = http.createServer(
         });
       }
 
+      const environmentMatch = url.pathname.match(
+        /^\/environment\/(frontend|backend)$/
+      );
+
+      if (req.method === "GET" && environmentMatch) {
+        const state = loadState();
+
+        return sendJson(res, 200, environmentStatus({
+          project: state.project,
+          environment: state.environment,
+          division: environmentMatch[1],
+        }));
+      }
+
       if (
         req.method === "POST" &&
         url.pathname === "/send"
@@ -702,6 +773,33 @@ const server = http.createServer(
             ...body,
             projectId: identity.projectId,
             opencodeSession: identity.opencodeSession,
+          });
+
+          return sendJson(res, 200, { task });
+        } catch (error) {
+          return sendJson(res, taskErrorStatus(error), {
+            error: String(error?.message || error),
+          });
+        }
+      }
+
+      if (
+        req.method === "POST" &&
+        url.pathname === "/task/cancel"
+      ) {
+        try {
+          const body = await readBody(req);
+          const state = loadState();
+          const projectId = state.project_id || path.basename(state.project);
+
+          if (body.expectedProjectId !== projectId) {
+            throw new Error("expected project does not match active project");
+          }
+
+          const task = getTaskStore().cancelTask({
+            taskId: body.taskId,
+            projectId,
+            reason: body.reason,
           });
 
           return sendJson(res, 200, { task });
